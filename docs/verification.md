@@ -47,15 +47,24 @@ make bitstream                   # remote if REMOTE is set in config.mk
 cat build/fpga/timing_status     # must read "met"
 make firmware && make package && make flash
 make validate                    # fingerprint + bitstream identity
-make deploy                      # flash wipes /usr/bin; redeploy tools
+make deploy                      # rootfs is volatile: flash OR any cold boot wipes /usr/bin; redeploy tools
 ./scripts/hil_regression.sh      # 80/80 session gate
-./scripts/session_end.sh         # authoritative: sim + HIL + loopback, logged
+./scripts/session_end.sh         # sim + HIL + cable loopback, logged (cable connected)
+
+# If the build fingerprint changed, the OTA gate is also required (D30):
+#   swap the loopback cable -> antenna
+make deploy
+./scripts/eapol_toggle_test.sh -n 20    # live OTA EAPOL; event eapol_toggle
+./scripts/merge_check.sh                # confirm BOTH gates logged for the fingerprint
 ```
 
 `hil_test.sh` (8 layers) and `loopback_test.sh` (7 layers) are deeper
 ladders for investigating a specific layer, not the merge gate.
-`session_end.sh` is the authoritative end-of-session gate; it re-runs
-sim, HIL, and loopback itself, so don't also run those standalone.
+`session_end.sh` runs sim + HIL + cable loopback; `eapol_toggle_test.sh`
+runs the OTA EAPOL gate. For a **fingerprint-changing** change both are
+required before merge (D30); for docs/tests/firmware neither is. The OTA and
+loopback setups are mutually exclusive (antenna vs cable), so this costs one
+physical swap per fingerprint-changing merge.
 
 ## Simulation Gate (`sim.sh`)
 

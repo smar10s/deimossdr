@@ -121,7 +121,7 @@ Boundary below).
 | Z-7010 BRAM | 60 | Available for FIFOs and ROMs |
 | USB 2.0 | ~5 MB/s | Cannot stream 20 MHz IQ to host |
 | ARM | 667 MHz single-core | Cannot decode OFDM in real time |
-| DDR3 | 512 MB shared | 128 MB RX ring, 4 MB TX, rest Linux |
+| DDR3 | 512 MB shared | 128 MB RX ring, 32 MB TX, rest Linux |
 
 ## Verification
 

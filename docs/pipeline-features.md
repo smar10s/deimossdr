@@ -68,6 +68,15 @@ Register map: `docs/registers.md`
   `depunct_restart`, for example), never by relying on downstream drain
   timing, and never sharing a reset with per-symbol state. Violations are
   latent until chain timing changes. See D25.
+- **CFO estimate ownership** — `acquisition_ctrl` arms `cfo_est` on an *accepted*
+  trigger (`cfo_start`) and clears `latched_phase_inc` per frame, so a
+  descriptor's `phase_inc` is that frame's estimate (or 0), never the previous
+  frame's. Correctness hardening per D28 — not the OTA EAPOL-loss fix.
+- **Decode-abort diagnostics** — per-reason abort counters and a last-SIG-parse
+  abort snapshot (`DIAG_ABORT_CNT/SIG/CTX`, 0x20–0x28) plus a good-frame
+  tag snapshot (`DIAG_TAG_SIG/CTX`, 0x2C/0x30); surfaced by
+  `deimos_rx_dump -a`. Note `DIAG_TAG_*` is a *last-tag* register, not
+  per-frame-bound, so don't treat it as the phase of the frame just drained.
 - **Budget-derived module throughput** — a module's target is
   `budget / work_per_symbol`, set by the system's binding stage, not by the
   module's best case. The Viterbi ships at ~1.27 clk/pair (not 1.0) because

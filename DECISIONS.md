@@ -169,8 +169,8 @@ must stay well under this to avoid losing data off the tail.
 
 ## D9: DDR layout — RX first, TX in separate bank group (2026-05-13)
 
-**Decision:** Within the 144 MB reserved region (0x10000000-0x18FFFFFF):
-128 MB RX ring buffer starting at 0x10000000, 4 MB TX waveform at 0x18400000.
+**Decision:** Within the 160 MB reserved region (0x10000000-0x19FFFFFF):
+128 MB RX ring buffer starting at 0x10000000, 32 MB TX region at 0x18000000.
 TX is placed *after* RX so they land in different DDR bank groups.
 
 **Rationale:** TX reads (HP2) and RX writes (HP0) hit the DDR controller
@@ -184,8 +184,15 @@ drain stalls with the same quad-buffer depth.
 
 **Consequence:** The RX ring buffer now starts at the bottom of the reserved
 region (0x10000000) and TX sits near the top (0x18000000). Both fit within
-the existing 144 MB reserved-memory DTB allocation. No bitstream change
+the existing 160 MB reserved-memory DTB allocation. No bitstream change
 required — only firmware DDR_TX_BASE and DDR_RX_BASE macros.
+
+**Amendment (2026-09-21):** TX was later expanded from 4 MB to 32 MB at the
+same base (0x18000000) for HIL playback / stream mode. The 128 MB offset
+between the RX and TX bases — the bank-group separation this decision is
+about — is unchanged. Current values: `platform/styx/firmware/src/hal.h`
+(`DDR_RX_SIZE` 0x08000000, `DDR_TX_SIZE` 0x02000000) and
+`platform/styx/registers.md`.
 
 ---
 
@@ -611,6 +618,9 @@ that recoverable.
   LUTs of headroom and re-sweep the directives if timing breaks.
 - If a fit fix would require editing a hardcoded constant in a shared styx
   proc, parameterize it instead.
+- Area-driven reductions must carry their *validation context* forward: D24's
+  correlator cut was justified on a wide search but silently broke the narrow
+  acquisition window — see D29.
 
 ---
 
@@ -764,6 +774,9 @@ there is no long integration window to exploit.
 - `T1_OFFSET` is tied to the tap count. Changing taps requires changing it.
 - Supporting measurement data is in `docs/correlator-reduction-analysis.md`
   (cited from `ltf_correlator.v:9`).
+- This is one half of D29: T1 correctness is joint across (taps, window,
+  `T1_OFFSET`). The wide-window equivalence above does **not** transfer to a
+  narrow window; re-validate jointly (sweep bench + OTA) on any change.
 
 ---
 
@@ -900,3 +913,122 @@ default silently rejecting sysfs gain writes (see
 **Rejected — manual fixed gain for OTA:** 3.3× lower frame rate and 44–49%
 FCS-OK in the A/B above. **Rejected — `slow_attack`:** settles on noise during
 WiFi's low duty cycle and degrades real frames.
+
+## D28: Coarse CFO estimate is owned by the accepted acquisition (2026-09-20)
+
+**Decision:** `acquisition_ctrl` arms the coarse CFO estimator itself: it emits
+`cfo_start` on an *accepted* trigger, wired to `cfo_est.start`, and clears
+`latched_phase_inc` on trigger accept. One estimate per accepted acquisition; a
+descriptor's `phase_inc` is that frame's estimate, or 0 if no fresh estimate
+arrived — never the previous frame's.
+
+**Rationale:** Previously `cfo_est.start` was driven by raw
+`stf_detect/frame_detect`, and the descriptor took the first `cfo_done` after an
+accepted trigger while `latched_phase_inc` was never cleared at the frame
+boundary. A spurious/re-trigger could start (and win) an estimate for a frame
+that was not acquired, and a frame with no fresh estimate inherited the previous
+frame's CFO. This is the frame-boundary rule of D25 applied to the coarse
+estimate: shared cross-frame state is reset at the boundary that begins the new
+frame, not left to luck.
+
+**Consequence / do not regress:** CFO arming is bound to the same
+single-outstanding acquisition decision that pushes the descriptor. Rejected
+triggers (FIFO full, too-close, metric fail) never start an estimate.
+
+**Not the EAPOL fix.** This was introduced as a candidate root cause for OTA
+EAPOL M2/M4 loss and is **not** it. OTA A/B (ch36, 15 toggles, `-a`) shows the
+loss unchanged within binomial noise (pre-fix ~13%, +latch-reset ~9%,
++ownership ~8%). Treat D28 as correctness hardening, not the loss fix. The live
+loss investigation is in STATUS.md (`logs/m4/ota_ab/`).
+
+**Fallback caveat:** on accept the latch is cleared to 0, so a frame whose
+`cfo_done` is late gets *no* correction rather than the last estimate. With the
+current timing (`cfo_done` lands during `S_WAIT_STF_END`) this is rare, but "no
+correction" is not obviously safer than a same-transmitter carry — the part
+most worth revisiting if estimator timing changes.
+
+**Observability (same change set):** per-reason decode-abort counters and a
+last-L-SIG/phase abort snapshot (`DIAG_ABORT_CNT/SIG/CTX`, regs 0x20–0x28), plus
+a good-frame tag snapshot (`DIAG_TAG_SIG/CTX`, regs 0x2C/0x30). These are the
+A/B backbone and are what falsified the stale-CFO story.
+
+---
+
+## D29: Timing is a reduced-gain estimator with geometric compensation (2026-09-27)
+
+**Decision:** The receiver has no full-gain LTF fine-timing stage. `stf_detect`
+is detect-only (delay-16 autocorrelation: `frame_detect` + a coarse `stf_end`);
+T1 is resolved by the deliberately truncated `ltf_correlator` (D24: 16 taps)
+plus an `acquisition_ctrl` search window and the fixed `T1_OFFSET=19`. The
+**(tap count, window geometry, T1_OFFSET) triple is one architectural unit**,
+validated jointly against field data — never pairwise.
+
+**Why:** area pressure (D21) paid for the correlator's LUTs by cutting
+processing gain (24→16 taps), and the lost gain is repaid in *geometry*: the
+window rejects out-of-band peaks and `T1_OFFSET` absorbs the 16-tap peak-shape
+bias. What makes that fragile is the correlator's partial-ambiguity sidelobes:
+a channel-induced +34-sample lobe is 0.00× the true peak at 64 taps, 0.76× at
+32, but **1.19× at 16** — so at 16 taps the window is the *only* thing that can
+reject it.
+
+**Evidence (the case that forced this):** the 2026-09 OTA AP-side EAPOL
+(M1/M3) loss. D24 proved "16 taps picks the same peak as 24" on a *wide*
+(80-sample) search; the real window was narrow and forward-only
+(`[stf_end+2, stf_end+31]`), so the +34 lobe sat inside it while the true peak
+— `stf_end` jitters −17..+9 around it — sat outside. Each was validated alone;
+their joint envelope was never evaluated. Fixed by option B
+(`docs/acquisition-window-fix.md`): an stf_end-anchored ping-pong trailing
+argmax whose window floats `[se−32, se+20]`, reaching backward for the true
+peak and stopping short of the lobe. OTA AP roles recovered to M1 20/20,
+M3 19/20 (were 4/20, 7/20).
+
+**Consequence / do not regress:**
+- Changing taps, window bounds, or `T1_OFFSET` requires the joint sweep bench
+  (`test_late_stf_end_selects_true_peak_not_late_lobe`) **and** an OTA EAPOL
+  run — sim/HIL/cable loopback do not exercise the channel lobe.
+- The way to restore gain is to *build* the fine stage, not tune geometry: the
+  coarse windowed max plus a refinement pass re-correlating the top candidates
+  against a full 24–64-tap LTF reference
+  (`docs/correlator-reduction-analysis.md`, Option C). Option B is a geometry
+  patch; Option C is the real fine stage.
+- Generalizes D21/D24: a DSP function replaced by constants/geometry must carry
+  the *validation context* of the function it replaced.
+
+**Scope:** this is specifically about T1 estimation. D23 (clean drops) and D25
+(frame-boundary state reset) stand independently.
+
+---
+
+## D30: OTA EAPOL is a merge gate for fingerprint-changing RTL (2026-09-27)
+
+**Decision:** No change that moves the build fingerprint merges to main until
+**both** gates are logged in `logs/hardware.jsonl` for that fingerprint:
+
+1. `session_end.sh` — sim + HIL + cable **loopback** (cable connected);
+2. `eapol_toggle_test.sh` — live **OTA** EAPOL handshake (antenna connected),
+   event `eapol_toggle`.
+
+Evidence is keyed on the **fingerprint**, not the commit, so docs, tests, and
+firmware changes that don't move the fingerprint need neither gate. Confirm
+with `scripts/merge_check.sh` before merging.
+
+**Rationale:** the D29 AP-frame loss (M1/M3) passed sim, HIL, **and** cable
+loopback for weeks and only failed on live OTA. The failure mechanism — a
+channel-induced +34-sample secondary lobe — does not exist in a cable or
+idealized channel: cable loopback cannot create it, HIL cannot, only an
+over-the-air multipath channel can. Every lower layer was green while the
+actual success metric (D7, EAPOL capture) was silently broken. Verification
+evidence is only as strong as its ability to reproduce the field condition;
+for the RF/PHY path, that is OTA.
+
+**Cost / coordination:** the OTA setup (antenna) and the loopback setup
+(TX→RX cable) are mutually exclusive, so each fingerprint-changing merge costs
+one physical swap and a `make deploy` on each side (volatile rootfs). Accepted
+as the price of not shipping a class of regression that sim/HIL/loopback cannot
+observe. Scope to fingerprint changes so documentation/test/firmware merges
+skip it.
+
+**Enforcement:** prose plus a check, not a hard merge hook — a human
+`git merge` bypasses git hooks, so the reviewer must run `merge_check.sh`
+(and the pre-commit hook now points at it). This rule would have caught the
+D29 loss at the D24 change, weeks before it surfaced.

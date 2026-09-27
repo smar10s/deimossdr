@@ -41,10 +41,12 @@ sshpass -p analog ssh -o StrictHostKeyChecking=no root@192.168.2.1
 
 Host key changes on every reflash. Default credentials: `root` / `analog`.
 
-A fresh flash replaces the rootfs, so the on-device tools
-(`deimos_hil_inject`, `deimos_fabric_loopback`, …) are gone. Run
-`make deploy` before any HIL or loopback — otherwise HIL/loopback run
-against stale or missing binaries.
+The Pluto rootfs is **volatile**: `make deploy` writes the on-device tools
+(`deimos_hil_inject`, `deimos_fabric_loopback`, …) into `/usr/bin`, which
+lives in RAM. **Any cold boot loses them — not just a flash.** Power
+cycles, antenna/cable swaps that drop power, and DFU recovery all count.
+Run `make deploy` after every cold boot and before any HIL or loopback —
+otherwise HIL/loopback run against stale or missing binaries.
 
 The device appears at `192.168.2.1` over USB-Ethernet. If the device
 does not respond to ping after flash, see DFU Recovery below.
