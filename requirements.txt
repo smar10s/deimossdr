@@ -11,7 +11,7 @@
 # never reads its metadata. lib80211's pyproject.toml declares
 # requires-python >=3.12; the validated interpreter here is 3.11. Installing
 # py80211 as a package (pip install -e) would require the 3.12 bump noted in
-# STATUS.md.
+# docs/handbook.md.
 
 cocotb==2.0.1          # RTL testbench framework (fpga/test/)
 find_libpython==0.5.1  # cocotb VPI needs this to locate libpython

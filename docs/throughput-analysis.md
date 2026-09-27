@@ -162,8 +162,8 @@ clocks and are absorbed by `circ_buf`.
   forces the full FILL_SKIP refill. Every SDF delay line and counter is
   already `en`-gated by `din_valid` (`fft64_sdf.v:454, 489, 833, 892`),
   so pausing rather than resetting between symbols is a design choice,
-  not an architectural constant. The pre-refactor `logs/latency_baseline.jsonl`
-  entries (fft_wrap-era keys `fft_wrap_continuous: 204` vs
+  not an architectural constant. The pre-refactor latency-baseline entries
+  (local-only log; fft_wrap-era keys `fft_wrap_continuous: 204` vs
   `fft_wrap_live_mode: 457`, null from 2026-06-23 onward) put this at worth
   ~70 clocks; high risk (bin-phase alignment via `gcnt`, and `chan_est.v:34-35`
   depends on the inter-symbol bin gap). Unexamined, not disproven.
@@ -365,5 +365,6 @@ binds at rate 54 (see its entry).
 - D23 (Viterbi not the limiter) and D23 (400-clock budget, clean-drop
   policy) — `DECISIONS.md`
 - Latency ratchets: `fpga/test/test_latency_ratchet.py`
-- Throughput model validation: `logs/latency_baseline.jsonl`
+- Throughput model validation: the local latency-baseline log
+  (`logs/latency_baseline.jsonl`, not shipped)
 - Per-symbol measurement: `diag_symbol_cycle` (`fpga/test/`)

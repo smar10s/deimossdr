@@ -8,7 +8,7 @@ WHY THIS EXISTS:
   This diag feeds the same window through the rx_frontend DUT and reports which
   frames the fabric tags on replay.
 
-  The decision fork (see STATUS.md):
+  The decision fork (see docs/acquisition-window-fix.md):
     - M2 not tagged OTA but tagged in sim  -> defect is UPSTREAM of the fabric
       (AGC/analog path); no RTL change fixes it.
     - M2 not tagged in sim either          -> defect is IN the fabric; this is

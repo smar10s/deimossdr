@@ -4,8 +4,8 @@ diag_cochannel_overlap.py — Diagnostic: co-channel interferer over target STF.
 WHY THIS EXISTS:
   OTA EAPOL captures lose the STA responses (M2/M4) that follow an AP frame at
   SIFS. They abort in decode_engine.v at S_PARSE_SIGNAL with the L-SIG length
-  intact while the RATE nibble and parity are corrupted (see STATUS.md,
-  logs/m4/ota_ab/).
+  intact while the RATE nibble and parity are corrupted (see
+  docs/acquisition-window-fix.md).
 
   An earlier reading attributed this to the target M2's coarse CFO being biased
   toward the interferer's CFO, which motivated an LTF fine-CFO stage. That

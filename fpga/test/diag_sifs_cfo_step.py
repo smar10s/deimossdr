@@ -7,7 +7,8 @@ WHY THIS EXISTS:
   decode_engine.v at S_PARSE_SIGNAL: the L-SIG length field decodes correctly
   while the RATE nibble and parity are corrupted, reproducibly (0x0013E1 twice),
   with latched frame_phase_inc ~251-263 LSB. Every "missing" frame still has its
-  peer ACK, so it was received fine over the air (see STATUS.md and logs/m4/).
+  peer ACK, so it was received fine over the air (see D28 and
+  docs/acquisition-window-fix.md).
 
 WORKING HYPOTHESIS (falsified — see RESULT):
   The second frame of a SIFS pair comes from a different transmitter with a

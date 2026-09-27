@@ -693,7 +693,7 @@ diag_power_ratio:
 
 # Per-frame CFO step across a SIFS pair (M1 AP -> M2 STA). Reads the RTL
 # abort snapshot to check whether frame 2's L-SIG parity fails, reproducing
-# the OTA EAPOL loss (0x13E1). See STATUS.md Next Steps #1.
+# the OTA EAPOL loss (0x13E1). See docs/acquisition-window-fix.md.
 .PHONY: diag_sifs_cfo_step
 diag_sifs_cfo_step:
 	$(MAKE) sim SIM_BUILD=sim_build_rx_frontend \

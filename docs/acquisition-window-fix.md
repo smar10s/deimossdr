@@ -5,7 +5,7 @@ EAPOL).** Branch `fix/eapol-capture`, flashed fingerprint `0x647f83bb`.
 The bench is GREEN; see §10 for results. OTA AP-side roles M1/M3 recovered
 to 100%/95% (was 20%/35%). Do **not** re-attempt option A.
 
-Read the parent context in `STATUS.md` and D22/D24/D28 first.
+Read the parent context in D22/D24/D28 first.
 
 ---
 
@@ -227,7 +227,8 @@ regression. `test_late_stf_end_selects_true_peak_not_late_lobe` is GREEN.
 
 **OTA confirmation (the actual success metric):** AP-side EAPOL roles
 recovered — M1 20/20 (was 4/20 = 20%), M3 19/20 (was 7/20 = 35%); STA M2/M4
-19/20. Total 3 missing / 80 (`logs/hardware.jsonl`, event `eapol_toggle`).
+19/20. Total 3 missing / 80 (`eapol_toggle_test.sh`, event `eapol_toggle`; the
+evidence log is local-only).
 The AP-frame loss is fixed on air.
 
 Caveat still open: `det→peak=113` / `peak=se+13` were measured on one golden

@@ -3,8 +3,8 @@ diag_class_a_acquisition.py — Measure class-A acquisition collision (sim-only)
 
 WHY:
   OTA EAPOL captures lose the STA responses (M2/M4) that follow an AP frame at
-  SIFS. STATUS.md established that the delta-160 repro is a class-A acquisition
-  collision: the interferer's STF completes
+  SIFS. The acquisition analysis (docs/acquisition-window-fix.md) established that
+  the delta-160 repro is a class-A acquisition collision: the interferer's STF completes
   first, acquisition locks onto the interferer, and the target M2 is never
   acquired. Before changing RTL we measure whether a second, correctly-timed
   M2 acquisition is reachable, and which gate drops it.

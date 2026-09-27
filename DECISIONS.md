@@ -457,7 +457,8 @@ gates on them. OTA performance at rate 54 depends on channel conditions.
 `deimos_adc_capture`, `deimos_burst_loopback`, `pluto_loopback`,
 `pluto_burst_loopback`) use fixed manual RX gain 24 dB. No AGC for
 loopback. `session_start.sh` logs ADC level telemetry (peak/RMS/clipped
-samples) as a `level` field in `logs/hardware.jsonl` and warns when
+samples) as a `level` field in the local hardware-evidence log
+(`logs/hardware.jsonl`, not shipped) and warns when
 peak < 1000 (low signal) or peak ≥ 2040 (clipping).
 
 **Rationale:** The AD9361 4-6 GHz gain table has discrete LNA transitions.
@@ -557,7 +558,8 @@ written beside `fingerprint` in the local `build/fpga/` evidence tree, which is
 private-dev-repo and never committed (AGENTS.md, "Build Artifacts").
 `flash.sh` stamps the hash into U-Boot env
 (`fw_setenv deimos_bitsha`); `validate.sh` and `session_start.sh` compare the
-device value to the build sidecar. Every `logs/hardware.jsonl` entry carries a
+device value to the build sidecar. Every hardware-evidence entry
+(`logs/hardware.jsonl`, local-only) carries a
 `bitstream` field beside `fingerprint`.
 
 **Rationale:** The fingerprint answers "which source tree is deployed?" and
@@ -939,7 +941,8 @@ triggers (FIFO full, too-close, metric fail) never start an estimate.
 EAPOL M2/M4 loss and is **not** it. OTA A/B (ch36, 15 toggles, `-a`) shows the
 loss unchanged within binomial noise (pre-fix ~13%, +latch-reset ~9%,
 +ownership ~8%). Treat D28 as correctness hardening, not the loss fix. The live
-loss investigation is in STATUS.md (`logs/m4/ota_ab/`).
+loss investigation is closed (D29, `docs/acquisition-window-fix.md`); raw
+OTA A/B captures are local-only.
 
 **Fallback caveat:** on accept the latch is cleared to 0, so a frame whose
 `cfo_done` is late gets *no* correction rather than the last estimate. With the
@@ -1002,7 +1005,8 @@ M3 19/20 (were 4/20, 7/20).
 ## D30: OTA EAPOL is a merge gate for fingerprint-changing RTL (2026-09-27)
 
 **Decision:** No change that moves the build fingerprint merges to main until
-**both** gates are logged in `logs/hardware.jsonl` for that fingerprint:
+**both** gates are logged in the local hardware-evidence log
+(`logs/hardware.jsonl`, not shipped) for that fingerprint:
 
 1. `session_end.sh` — sim + HIL + cable **loopback** (cable connected);
 2. `eapol_toggle_test.sh` — live **OTA** EAPOL handshake (antenna connected),

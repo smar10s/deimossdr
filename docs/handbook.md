@@ -165,5 +165,4 @@ Python is pinned to 3.11. That is a legacy pin, not a cocotb constraint:
 cocotb 2.0.1 declares support through 3.13. Bumping to 3.12 would let
 `py80211` install as a package (its `pyproject.toml` requires `>=3.12`)
 instead of relying on the `sys.path` injection in
-`fpga/test/frontend_helpers.py`; revalidate the gate suite first
-(see STATUS.md next steps).
+`fpga/test/frontend_helpers.py`; revalidate the gate suite first.
