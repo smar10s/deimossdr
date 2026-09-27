@@ -91,8 +91,16 @@ module stf_detect (
 
     // Update DC accumulator: dc += (in - dc_int) / 16
     // Division by 16 via fixed-point: accumulator has 4 fractional bits.
-    wire signed [11:0] err_i = in_i - dc_i_int;
-    wire signed [11:0] err_q = in_q - dc_q_int;
+    //
+    // err MUST be 13-bit: in and dc_int are each 12-bit signed, so their
+    // difference spans [-4095, 4095] (13-bit). A 12-bit err wraps once
+    // |dc_int| > 0 and |in| approaches full scale, which feeds the
+    // accumulator the wrong sign and runs it away. On strong frames (OTA
+    // M2, rms ~910) the DC estimate then saturates/wraps, corrupting the
+    // HPF output, collapsing the STF autocorrelation early, and firing
+    // stf_end ~64 samples early -> wrong LTF window -> lost frame.
+    wire signed [12:0] err_i = {in_i[11], in_i} - {dc_i_int[11], dc_i_int};
+    wire signed [12:0] err_q = {in_q[11], in_q} - {dc_q_int[11], dc_q_int};
 
     always @(posedge clk) begin
         if (!rst_n || !enable) begin
@@ -104,8 +112,8 @@ module stf_detect (
             // adding error * 2^4 / 2^4 = error to the fractional part.
             // We want: dc_acc += err / 16 (in accumulator units = err)
             // So we just add the sign-extended error to the accumulator.
-            dc_i_acc <= dc_i_acc + {{DC_FRAC{err_i[11]}}, err_i};
-            dc_q_acc <= dc_q_acc + {{DC_FRAC{err_q[11]}}, err_q};
+            dc_i_acc <= dc_i_acc + {{(DC_W-13){err_i[12]}}, err_i};
+            dc_q_acc <= dc_q_acc + {{(DC_W-13){err_q[12]}}, err_q};
         end
     end
 
