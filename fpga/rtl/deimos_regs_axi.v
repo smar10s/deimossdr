@@ -21,6 +21,12 @@
 //                           const-tied 0 in the BD; addresses kept).
 //   0x18  PHASE_INC     RO  [15:0]=cfo_est phase_inc (sign-extended). Read-only.
 //   0x1C  VERSION       RO  Firmware ID (parameter). Read-only.
+//   0x20  DIAG_ABORT_CNT RO [31:24]=watchdog, [23:16]=overwritten,
+//                           [15:8]=invalid-rate, [7:0]=SIG-parse aborts.
+//   0x24  DIAG_ABORT_SIG RO [23:0]=L-SIG bits at the last SIG-parse abort.
+//   0x28  DIAG_ABORT_CTX RO [31:16]=ltf1_offset, [15:0]=latched frame_phase_inc at abort.
+//   0x2C  DIAG_TAG_SIG   RO [23:0]=L-SIG bits at the last good tag-out.
+//   0x30  DIAG_TAG_CTX   RO [31:16]=ltf1_offset, [15:0]=latched frame_phase_inc at tag.
 
 (* X_INTERFACE_PARAMETER = "PROTOCOL AXI4LITE, ADDR_WIDTH 32, DATA_WIDTH 32" *)
 module deimos_regs_axi #(
@@ -55,7 +61,13 @@ module deimos_regs_axi #(
     input  wire [7:0]  diag_frames_found_in,
     input  wire [7:0]  diag_frames_rejected_in,
     input  wire [15:0] diag_drop_cnt_in,
-    input  wire [15:0] diag_clip_cnt_in
+    input  wire [15:0] diag_clip_cnt_in,
+
+    input  wire [31:0] diag_abort_cnt_in,
+    input  wire [31:0] diag_abort_sig_in,
+    input  wire [31:0] diag_abort_ctx_in,
+    input  wire [31:0] diag_tag_sig_in,
+    input  wire [31:0] diag_tag_ctx_in
 );
 
     assign s_axi_bresp = 2'b00;
@@ -91,11 +103,11 @@ module deimos_regs_axi #(
                 s_axi_awready <= 1'b1;
                 s_axi_wready  <= 1'b1;
                 aw_en <= 1'b0;
-                case (s_axi_awaddr[4:2])
-                    3'd0: reg_stf_thresh   <= s_axi_wdata[7:0];
-                    3'd1: reg_stf_enable   <= s_axi_wdata[0];
-                    // Slots 2,4,5: read-only diagnostic counters (writes ignored)
-                    3'd3: reg_snap_mode    <= s_axi_wdata[2:0];
+                case (s_axi_awaddr[5:2])
+                    4'd0: reg_stf_thresh   <= s_axi_wdata[7:0];
+                    4'd1: reg_stf_enable   <= s_axi_wdata[0];
+                    // Slots 2,4,5,8,9,10: read-only diagnostic counters (writes ignored)
+                    4'd3: reg_snap_mode    <= s_axi_wdata[2:0];
                 endcase
             end else begin
                 s_axi_awready <= 1'b0;
@@ -120,15 +132,20 @@ module deimos_regs_axi #(
             if (s_axi_arvalid && !s_axi_arready) begin
                 s_axi_arready <= 1'b1;
                 s_axi_rvalid  <= 1'b1;
-                case (s_axi_araddr[4:2])
-                    3'd0: s_axi_rdata <= {24'd0, reg_stf_thresh};
-                    3'd1: s_axi_rdata <= {31'd0, reg_stf_enable};
-                    3'd2: s_axi_rdata <= {16'd0, diag_frames_found_in, diag_frames_rejected_in};
-                    3'd3: s_axi_rdata <= {29'd0, reg_snap_mode};
-                    3'd4: s_axi_rdata <= {16'd0, diag_drop_cnt_in};
-                    3'd5: s_axi_rdata <= {16'd0, diag_clip_cnt_in};
-                    3'd6: s_axi_rdata <= {{16{phase_inc_in[15]}}, phase_inc_in};
-                    3'd7: s_axi_rdata <= VERSION;
+                case (s_axi_araddr[5:2])
+                    4'd0:  s_axi_rdata <= {24'd0, reg_stf_thresh};
+                    4'd1:  s_axi_rdata <= {31'd0, reg_stf_enable};
+                    4'd2:  s_axi_rdata <= {16'd0, diag_frames_found_in, diag_frames_rejected_in};
+                    4'd3:  s_axi_rdata <= {29'd0, reg_snap_mode};
+                    4'd4:  s_axi_rdata <= {16'd0, diag_drop_cnt_in};
+                    4'd5:  s_axi_rdata <= {16'd0, diag_clip_cnt_in};
+                    4'd6:  s_axi_rdata <= {{16{phase_inc_in[15]}}, phase_inc_in};
+                    4'd7:  s_axi_rdata <= VERSION;
+                    4'd8:  s_axi_rdata <= diag_abort_cnt_in;
+                    4'd9:  s_axi_rdata <= diag_abort_sig_in;
+                    4'd10: s_axi_rdata <= diag_abort_ctx_in;
+                    4'd11: s_axi_rdata <= diag_tag_sig_in;
+                    4'd12: s_axi_rdata <= diag_tag_ctx_in;
                 endcase
             end else begin
                 s_axi_arready <= 1'b0;

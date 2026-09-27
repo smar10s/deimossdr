@@ -50,7 +50,8 @@ create_bd_cell -type module -reference cfo_est cfo_est_0
 
 ad_connect sys_cpu_clk cfo_est_0/clk
 ad_connect sys_cpu_resetn cfo_est_0/rst_n
-ad_connect stf_detect_0/frame_detect cfo_est_0/start
+# CFO estimation is armed by the acquisition FSM (one estimate per accepted
+# trigger) — wired in the control block below, once acquisition_ctrl_0 exists.
 ad_connect hil_ctrl_0/iq_valid cfo_est_0/iq_valid
 ad_connect hil_ctrl_0/iq_re cfo_est_0/iq_i
 ad_connect hil_ctrl_0/iq_im cfo_est_0/iq_q
@@ -154,6 +155,11 @@ ad_connect stf_detect_0/frame_detect acquisition_ctrl_0/frame_detect
 ad_connect stf_detect_0/stf_end acquisition_ctrl_0/stf_end
 ad_connect cfo_est_0/phase_inc acquisition_ctrl_0/phase_inc
 ad_connect cfo_est_0/done acquisition_ctrl_0/cfo_done
+# CFO estimation is armed by the acquisition FSM on an ACCEPTED trigger (one
+# estimate per acquired frame), not by raw stf_detect/frame_detect. This binds
+# the estimate to the same single-outstanding decision that pushes the
+# descriptor, so a spurious/re-trigger cannot displace or mis-associate it.
+ad_connect acquisition_ctrl_0/cfo_start cfo_est_0/start
 
 # CFO phase_inc readback to deimos_regs (diagnostic)
 ad_connect cfo_est_0/phase_inc deimos_regs_0/phase_inc_in
@@ -162,6 +168,13 @@ ad_connect cfo_est_0/phase_inc deimos_regs_0/phase_inc_in
 ad_connect acquisition_ctrl_0/diag_frames_found deimos_regs_0/diag_frames_found_in
 ad_connect acquisition_ctrl_0/diag_frames_rejected deimos_regs_0/diag_frames_rejected_in
 ad_connect decode_engine_0/diag_drop_cnt deimos_regs_0/diag_drop_cnt_in
+# Abort-reason counters + last SIG-parse abort snapshot (0x20/0x24/0x28)
+ad_connect decode_engine_0/diag_abort_cnts deimos_regs_0/diag_abort_cnt_in
+ad_connect decode_engine_0/diag_abort_sig deimos_regs_0/diag_abort_sig_in
+ad_connect decode_engine_0/diag_abort_ctx deimos_regs_0/diag_abort_ctx_in
+# Good-frame (tag-out) snapshot for the good-vs-abort A/B (0x2C/0x30)
+ad_connect decode_engine_0/diag_tag_sig deimos_regs_0/diag_tag_sig_in
+ad_connect decode_engine_0/diag_tag_ctx deimos_regs_0/diag_tag_ctx_in
 # chan_est_0/clip_cnt wired below (after chan_est_0 creation)
 
 # STF clear: split into unconditional (watchdog) + gated (playback_start).

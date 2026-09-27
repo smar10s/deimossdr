@@ -387,6 +387,12 @@ int deimos_rx_poll(deimos_rx_frame_t *frame)
 
     /* Read TAG_LO (peek — no pop) */
     uint32_t lo = hal_reg_read(REG_TAG_FIFO_TAG_LO);
+    /* Read the shared good-frame snapshot NOW, before TAG_HI pops and before
+     * the PSDU readback. The snapshot register tracks the newest tag; reading
+     * it here (1-2 AXI reads after STATUS) keeps it equal to this frame's
+     * value, whereas reading it after the PSDU readback lets later-arriving
+     * frames (SIFS bursts) overwrite it — the v1 A/B misattribution bug. */
+    frame->phase_inc = DIAG_TAG_PHASE(hal_reg_read(REG_DEIMOS_DIAG_TAG_CTX));
     /* Read TAG_HI (pops tag + sets BRAM cursor) */
     uint32_t hi = hal_reg_read(REG_TAG_FIFO_TAG_HI);
 

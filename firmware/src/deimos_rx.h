@@ -97,6 +97,7 @@ typedef struct {
     uint16_t    length;         /* SIGNAL length field (includes 4-byte FCS) */
     bool        fcs_ok;         /* fabric FCS check result */
     uint16_t    psdu_addr;      /* BRAM address (diagnostics) */
+    int16_t     phase_inc;      /* latched per-frame CFO (diagnostics) */
     uint8_t     psdu[DEIMOS_RX_MAX_PSDU];  /* decoded bytes (length - 4) */
     uint16_t    psdu_len;       /* actual bytes read (0 if fcs_ok=false) */
 } deimos_rx_frame_t;

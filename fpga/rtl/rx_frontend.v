@@ -41,6 +41,11 @@ module rx_frontend (
     output wire [7:0] diag_frames_rejected,
     output wire [15:0] diag_drop_cnt,
     output wire [15:0] diag_clip_cnt,
+    output wire [31:0] diag_abort_cnts,
+    output wire [31:0] diag_abort_sig,
+    output wire [31:0] diag_abort_ctx,
+    output wire [31:0] diag_tag_sig,
+    output wire [31:0] diag_tag_ctx,
     output wire psdu_byte_valid,
     output wire [7:0] psdu_byte_out,
     output wire psdu_frame_done,
@@ -50,6 +55,7 @@ module rx_frontend (
     // internal nets (names from scripts/pipeline_sim_view.py)
     wire acq_pipeline_ack;
     wire cfo_done_w;
+    wire cfo_start_w;
     wire frame_detect_w;
     wire [15:0] phase_inc_w;
     wire stf_end_w;
@@ -86,7 +92,7 @@ module rx_frontend (
     cfo_est u_cfo_est (
         .clk(clk),
         .rst_n(rst_n),
-        .start(frame_detect_w),
+        .start(cfo_start_w),
         .iq_i(iq_i_in),
         .iq_q(iq_q_in),
         .iq_valid(iq_valid_in),
@@ -117,6 +123,7 @@ module rx_frontend (
         .parsed_length(parsed_length),
         .pipeline_ack(acq_pipeline_ack),
         .watchdog_reset(watchdog_reset_w),
+        .cfo_start(cfo_start_w),
         .state(state),
         .fcs_valid(fcs_valid),
         .fcs_fail(fcs_fail),
@@ -125,6 +132,11 @@ module rx_frontend (
         .diag_frames_rejected(diag_frames_rejected),
         .diag_drop_cnt(diag_drop_cnt),
         .diag_clip_cnt(diag_clip_cnt),
+        .diag_abort_cnts(diag_abort_cnts),
+        .diag_abort_sig(diag_abort_sig),
+        .diag_abort_ctx(diag_abort_ctx),
+        .diag_tag_sig(diag_tag_sig),
+        .diag_tag_ctx(diag_tag_ctx),
         .psdu_byte_valid(psdu_byte_valid),
         .psdu_byte_out(psdu_byte_out),
         .psdu_frame_done(psdu_frame_done),

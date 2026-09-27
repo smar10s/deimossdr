@@ -110,4 +110,9 @@ Instance `deimos_regs_0`, defined in `fpga/rtl/deimos_regs_axi.v`.
 | `0x14` | `0x7C520014` | `DIAG_CLIP_CNT` | RO | RESERVED — unimplemented (chan_est counter |
 | `0x18` | `0x7C520018` | `PHASE_INC` | RO | [15:0]=cfo_est phase_inc (sign-extended). Read-only. |
 | `0x1C` | `0x7C52001C` | `VERSION` | RO | Firmware ID (parameter). Read-only. |
+| `0x20` | `0x7C520020` | `DIAG_ABORT_CNT` | RO | [31:24]=watchdog, [23:16]=overwritten, |
+| `0x24` | `0x7C520024` | `DIAG_ABORT_SIG` | RO | [23:0]=L-SIG bits at the last SIG-parse abort. |
+| `0x28` | `0x7C520028` | `DIAG_ABORT_CTX` | RO | [31:16]=ltf1_offset, [15:0]=latched frame_phase_inc at abort. |
+| `0x2C` | `0x7C52002C` | `DIAG_TAG_SIG` | RO | [23:0]=L-SIG bits at the last good tag-out. |
+| `0x30` | `0x7C520030` | `DIAG_TAG_CTX` | RO | [31:16]=ltf1_offset, [15:0]=latched frame_phase_inc at tag. |
 

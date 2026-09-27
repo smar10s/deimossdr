@@ -158,6 +158,15 @@ module decode_engine (
     // Diagnostic counter: IQ samples dropped (write_ok false)
     output wire [15:0] diag_drop_cnt,
 
+    // Abort diagnostics: per-reason counters + last SIG-parse abort snapshot
+    output wire [31:0] diag_abort_cnts,  // {wd, ow, rate, sig} 8-bit counters
+    output wire [31:0] diag_abort_sig,   // {8'b0, sig_bits[23:0]} at last SIG abort
+    output wire [31:0] diag_abort_ctx,   // {ltf1_offset[15:0], frame_phase_inc[15:0]} at last SIG abort
+
+    // Good-frame (tag-out) snapshot: A/B baseline against the abort snapshot.
+    output wire [31:0] diag_tag_sig,     // {8'b0, sig_bits[23:0]} at last tag
+    output wire [31:0] diag_tag_ctx,     // {ltf1_offset[15:0], frame_phase_inc[15:0]} at last tag
+
     // Pilot tracking interface
     output reg  [7:0]  symbol_idx_out,
     output reg         symbol_start_out,
@@ -241,6 +250,13 @@ module decode_engine (
     // address and firmware interface exist; firmware reads 0 until the
     // counter is implemented.
     assign diag_drop_cnt = 16'd0;
+
+    assign diag_abort_cnts = {abort_wd_cnt, abort_ow_cnt, abort_rate_cnt, abort_sig_cnt};
+    assign diag_abort_sig = abort_sig_snap;
+    assign diag_abort_ctx = abort_ctx_snap;
+
+    assign diag_tag_sig = tag_sig_snap;
+    assign diag_tag_ctx = tag_ctx_snap;
 
     // Registered S_IDLE decision terms: the data_age carry chain
     // (wr_ptr - pop_ltf_pos) plus its compares would otherwise stretch
@@ -409,6 +425,18 @@ module decode_engine (
     reg [7:0] diag_abort_cnt;
     reg [7:0] diag_heartbeat;
 
+    // Abort diagnostics (per-reason counters + last SIG abort snapshot)
+    reg [7:0]  abort_sig_cnt;
+    reg [7:0]  abort_rate_cnt;
+    reg [7:0]  abort_ow_cnt;
+    reg [7:0]  abort_wd_cnt;
+    reg [31:0] abort_sig_snap;
+    reg [31:0] abort_ctx_snap;
+
+    // Good-frame (tag-out) snapshot (see diag_tag_sig/diag_tag_ctx)
+    reg [31:0] tag_sig_snap;
+    reg [31:0] tag_ctx_snap;
+
     // Watchdog reset output.
     // Registered: the net crosses the BD hierarchy into stf_clear_or →
     // stf_detect.clear → rearm logic (8 LUT levels + a long route on the
@@ -542,6 +570,14 @@ module decode_engine (
             diag_accepted_cnt <= 0;
             diag_abort_cnt  <= 0;
             diag_heartbeat  <= 0;
+            abort_sig_cnt   <= 0;
+            abort_rate_cnt  <= 0;
+            abort_ow_cnt    <= 0;
+            abort_wd_cnt    <= 0;
+            abort_sig_snap  <= 0;
+            abort_ctx_snap  <= 0;
+            tag_sig_snap    <= 0;
+            tag_ctx_snap    <= 0;
             fcs_timeout_cnt <= 0;
             watchdog_cnt    <= 0;
         end else begin
@@ -608,6 +644,7 @@ module decode_engine (
                     state          <= S_IDLE;
                     tag_abort      <= 1;
                     diag_abort_cnt <= diag_abort_cnt + 1;
+                    abort_wd_cnt   <= abort_wd_cnt + 1;
                     eq_rd_sel          <= 0;
                     vit_streaming_mode <= 0;
                     is_signal_out      <= 0;
@@ -657,6 +694,7 @@ module decode_engine (
                             fifo_pop <= 1;
                             tag_abort <= 1;
                             diag_abort_cnt <= diag_abort_cnt + 1;
+                            abort_ow_cnt   <= abort_ow_cnt + 1;
                             // Stay in S_IDLE — check next queued frame
                         end else if (fill_ready_r || fill_wait_cnt >= 8'd208) begin
                             // Pop frame descriptor from FIFO
@@ -830,6 +868,9 @@ module decode_engine (
                         seq_done     <= 1;
                         tag_abort    <= 1;
                         diag_abort_cnt <= diag_abort_cnt + 1;
+                        abort_sig_cnt  <= abort_sig_cnt + 1;
+                        abort_sig_snap <= {8'b0, sig_bits[23:0]};
+                        abort_ctx_snap <= {ltf1_offset, frame_phase_inc};
                         state        <= S_IDLE;
                     end else begin
                         state <= S_CONFIG_DATA;
@@ -842,6 +883,7 @@ module decode_engine (
                         seq_done     <= 1;
                         tag_abort    <= 1;
                         diag_abort_cnt <= diag_abort_cnt + 1;
+                        abort_rate_cnt <= abort_rate_cnt + 1;
                         state        <= S_IDLE;
                     end else begin
                         signal_valid  <= 1;
@@ -948,6 +990,10 @@ module decode_engine (
                     tag_length <= parsed_length;
                     tag_fcs_ok <= fcs_result_ok;
                     snap_trig  <= 1;
+                    // Good-frame snapshot for the hardware A/B (good vs abort).
+                    // sig_bits/frame_phase_inc still hold this frame's values.
+                    tag_sig_snap <= {8'b0, sig_bits[23:0]};
+                    tag_ctx_snap <= {ltf1_offset, frame_phase_inc};
                     state      <= S_DONE;
                 end
 

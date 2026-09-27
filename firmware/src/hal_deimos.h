@@ -48,10 +48,25 @@
 #define REG_DEIMOS_DIAG_CLIP   (REG_DEIMOS_REGS_BASE + 0x14)  /* RO: [15:0]=chan_est clip events */
 #define REG_DEIMOS_PHASE_INC   (REG_DEIMOS_REGS_BASE + 0x18)
 #define REG_DEIMOS_VERSION     (REG_DEIMOS_REGS_BASE + 0x1C)
+#define REG_DEIMOS_DIAG_ABORT_CNT (REG_DEIMOS_REGS_BASE + 0x20) /* RO: {wd,ow,rate,sig} */
+#define REG_DEIMOS_DIAG_ABORT_SIG (REG_DEIMOS_REGS_BASE + 0x24) /* RO: [23:0]=L-SIG bits */
+#define REG_DEIMOS_DIAG_ABORT_CTX (REG_DEIMOS_REGS_BASE + 0x28) /* RO: [15:0]=latched phase_inc */
+#define REG_DEIMOS_DIAG_TAG_SIG   (REG_DEIMOS_REGS_BASE + 0x2C) /* RO: [23:0]=L-SIG bits at last good tag */
+#define REG_DEIMOS_DIAG_TAG_CTX   (REG_DEIMOS_REGS_BASE + 0x30) /* RO: [15:0]=latched phase_inc at that tag */
 
 /* Diagnostic register field extraction */
 #define DIAG_ACQ_FOUND(d)      (((d) >> 8) & 0xFF)
 #define DIAG_ACQ_REJECTED(d)   ((d) & 0xFF)
+
+#define DIAG_ABORT_SIG(d)      ((d) & 0xFF)
+#define DIAG_ABORT_RATE(d)     (((d) >> 8) & 0xFF)
+#define DIAG_ABORT_OW(d)       (((d) >> 16) & 0xFF)
+#define DIAG_ABORT_WD(d)       (((d) >> 24) & 0xFF)
+#define DIAG_ABORT_SIGBITS(d)  ((d) & 0xFFFFFF)
+#define DIAG_ABORT_PHASE(d)    ((int16_t)((d) & 0xFFFF))
+
+#define DIAG_TAG_SIGBITS(d)    ((d) & 0xFFFFFF)
+#define DIAG_TAG_PHASE(d)      ((int16_t)((d) & 0xFFFF))
 
 /* --------------------------------------------------------------------------
  * HIL playback buffer (DDR)
