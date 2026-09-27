@@ -1,0 +1,47 @@
+# .rsync-exclude — files excluded from remote sync
+# Used by: fpga/Makefile (rsync --exclude-from)
+
+build/
+.git/
+.venv/
+__pycache__/
+.DS_Store
+
+# Local config (remote has its own)
+config.mk
+
+# Styx ADI HDL submodule (initialized on remote)
+platform/styx/fpga/extern/adi-hdl/.git/
+platform/styx/fpga/extern/adi-hdl/library/
+
+# Styx build artifacts
+platform/styx/build/
+
+# Sim build caches
+fpga/test/sim_build_*/
+
+# Firmware build artifacts
+firmware/build/
+extern/
+
+# Legacy directories from old build system (pre-styx-rebase)
+adi-hdl/
+plutosdr-fw/
+lib_override/
+vivado_wrapper.sh
+
+# Vivado project build artifacts (preserved on remote for incremental builds)
+fpga/project/pluto.xpr
+fpga/project/pluto.gen/
+fpga/project/pluto.runs/
+fpga/project/pluto.srcs/
+fpga/project/pluto.cache/
+fpga/project/pluto.hw/
+fpga/project/pluto.ip_user_files/
+fpga/project/pluto.sim/
+fpga/project/NAV_log.txt
+fpga/project/vivado*.jou
+fpga/project/vivado*.log
+fpga/project/.Xil/
+fpga/project/*_synth_1/
+fpga/project/*_impl_1/

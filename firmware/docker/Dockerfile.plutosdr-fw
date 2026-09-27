@@ -1,0 +1,14 @@
+FROM ubuntu:22.04
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Buildroot + Linux kernel cross-compilation dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential gcc g++ make cmake \
+    bc bison flex libssl-dev libelf-dev \
+    cpio rsync wget unzip git file \
+    u-boot-tools device-tree-compiler \
+    python3 python3-setuptools \
+    libncurses-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src

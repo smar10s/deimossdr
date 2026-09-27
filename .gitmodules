@@ -1,0 +1,8 @@
+[submodule "extern/lib80211"]
+	path = extern/lib80211
+	url = https://github.com/smar10s/lib80211.git
+	branch = main
+[submodule "platform/styx"]
+	path = platform/styx
+	url = https://github.com/smar10s/styxsdr
+	ignore = dirty

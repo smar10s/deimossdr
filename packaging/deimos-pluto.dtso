@@ -1,0 +1,34 @@
+// packaging/deimos-pluto.dtso — Device tree overlay for Deimos on PlutoSDR
+//
+// Applied at packaging time via fdtoverlay to stock PlutoSDR DTBs.
+// Same pattern as styx's styx-pluto.dtso — same memory layout
+// (160 MB at 0x10000000), same ADI DMA disable.
+//
+// Changes:
+//   1. Disable ADI HDL DMA engines (replaced by styx iq_dma_rx/tx)
+//   2. Reserve 160 MB DDR for IQ DMA buffers (128 MB RX + 32 MB TX)
+
+/dts-v1/;
+/plugin/;
+
+&{/fpga-axi@0} {
+	dma@7c400000 {
+		status = "disabled";
+	};
+	dma@7c420000 {
+		status = "disabled";
+	};
+};
+
+&{/} {
+	reserved-memory {
+		#address-cells = <0x01>;
+		#size-cells = <0x01>;
+		ranges;
+
+		deimos@10000000 {
+			reg = <0x10000000 0x0A000000>;
+			no-map;
+		};
+	};
+};

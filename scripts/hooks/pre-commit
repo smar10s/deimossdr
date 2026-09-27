@@ -1,0 +1,34 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT
+# pre-commit hook — block direct RTL commits to main
+#
+# Install with: make hooks
+#
+# Rationale (AGENTS.md, "The Merge Rule"): RTL changes must land on a feature
+# branch that has been through the validation ladder, and the human merges
+# after reviewing logs/hardware.jsonl. This hook is the structural
+# enforcement of that rule — the project regressed repeatedly when
+# unvalidated RTL went straight to main.
+
+branch=$(git symbolic-ref --short HEAD 2>/dev/null)
+
+if [ "$branch" = "main" ]; then
+    if git diff --cached --name-only | grep -q '^fpga/rtl/'; then
+        echo ""
+        echo "BLOCKED: Direct RTL commits to main are not allowed."
+        echo ""
+        echo "Workflow:"
+        echo "  1. Create a feature branch: git checkout -b fix/description"
+        echo "  2. Make RTL changes and commit there"
+        echo "  3. Run the validation ladder: sim -> HIL -> cable loopback"
+        echo "     (./scripts/session_end.sh runs all three and logs results)"
+        echo "  4. Results are appended to logs/hardware.jsonl"
+        echo "  5. Human reviews the log and merges:"
+        echo "       git checkout main && git merge <branch>"
+        echo ""
+        echo "To bypass for a genuine emergency: git commit --no-verify"
+        echo "(If you are an agent, you may not do this. See AGENTS.md.)"
+        echo ""
+        exit 1
+    fi
+fi

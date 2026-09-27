@@ -1,0 +1,20 @@
+# Python dependencies for simulation and tooling.
+#
+#   python3.11 -m venv .venv
+#   .venv/bin/pip install -r requirements.txt
+#
+# Versions below are what the gate suite is validated against. Simulation
+# needs nothing else beyond verilator; no hardware, no Vivado.
+#
+# py80211 is deliberately not listed: the sim tests import it directly from
+# the lib80211 submodule via sys.path (fpga/test/frontend_helpers.py), so pip
+# never reads its metadata. lib80211's pyproject.toml declares
+# requires-python >=3.12; the validated interpreter here is 3.11. Installing
+# py80211 as a package (pip install -e) would require the 3.12 bump noted in
+# STATUS.md.
+
+cocotb==2.0.1          # RTL testbench framework (fpga/test/)
+find_libpython==0.5.1  # cocotb VPI needs this to locate libpython
+numpy>=2.0             # test vectors, IQ math (most of fpga/test/)
+scipy>=1.10            # py80211.impairments (lfilter), ldpc_tables (sparse)
+vcdvcd==2.6.0          # scripts/vcd_query.py waveform inspection

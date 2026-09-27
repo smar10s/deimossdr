@@ -1,0 +1,66 @@
+# config.mk — Local build configuration (gitignored)
+#
+# Copy this file to config.mk and edit for your environment:
+#   cp config.mk.example config.mk
+#
+# Everything here is optional — the defaults build locally with Vivado on
+# PATH. Alternatively, pass variables on the command line:
+#   make -C fpga bitstream PLACE_STRATEGY=EarlyBlockPlacement
+#   make -C fpga bitstream OPT_DIRECTIVE=ExploreArea
+
+# ---- Vivado ----
+# Only needed if Vivado is not on PATH, or is not at the default location.
+# VIVADO_SETTINGS is sourced on the *remote* host for remote builds.
+# VIVADO          = vivado
+# VIVADO_SETTINGS = /opt/Xilinx/2025.2/Vivado/settings64.sh
+
+# ---- Remote builds ----
+# Set REMOTE to build on a remote host via SSH (Vivado has no macOS build,
+# so this is the usual path when developing on a Mac).
+# LEAVE THESE COMMENTED FOR A LOCAL BUILD — if REMOTE is set, `make
+# bitstream` rsyncs the tree to that host and builds there.
+# REMOTE      = buildhost.example.com
+# REMOTE_USER = youruser
+# REMOTE_PORT = 22
+# REMOTE_DIR  = ~/deimos
+#
+# Extra library path prepended to LD_LIBRARY_PATH on the remote host.
+# Some Vivado installs need a shim directory here (e.g. patched libstdc++).
+# REMOTE_LD_PATH = /opt/vivado-libs
+
+# ---- PlutoSDR target ----
+# Defaults match a stock Pluto over USB ethernet.
+# PLUTO_IP   = 192.168.2.1
+# PLUTO_USER = root
+# PLUTO_PASS = analog
+
+# ---- Placement strategy ----
+# Vivado placement directive applied during implementation.
+# Default: Explore (safe, general-purpose)
+#
+# Options:
+#   Explore              — Vivado default
+#   EarlyBlockPlacement  — places DSP/BRAM first (DSP-heavy designs)
+#   AltSpreadLogic_high  — spreads logic to reduce routing congestion (>90% LUT)
+#   ExtraPostPlacementOpt — extra optimization passes after placement
+#   WLDrivenBlockPlacement — minimizes total wire length
+#
+# PLACE_STRATEGY = Explore
+
+# ---- opt_design directive ----
+# Applied during implementation (styx::implement -opt_directive).
+# The styx default is ExploreWithRemap; deimos overrides to ExploreArea,
+# which is required to fit at ~96% pre-opt LUTs (~200 LUT headroom).
+# Fit-tuning knob that may need sweeping again — see D21.
+# OPT_DIRECTIVE = ExploreArea
+
+# ---- OOC modules ----
+# Modules synthesized out-of-context with area optimization.
+# Default deimos list (compute-heavy receiver pipeline modules):
+# OOC_MODULES = stf_detect cfo_est viterbi_k7 demapper pilot_track \
+#               cfo_mixer fft64_sdf ltf_correlator ltf_peak_detect \
+#               decode_engine acquisition_ctrl
+
+# ---- Incremental implementation ----
+# Path to a reference DCP from a previous successful build.
+# INCREMENTAL = build/fpga/deimos_impl.dcp
