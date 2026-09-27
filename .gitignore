@@ -48,6 +48,7 @@ fpga/test/waves/
 captures/*.json
 captures/*.npy
 captures/*.cf32
+captures/*.bin
 captures/debug/
 
 # Transient burst tool stderr captures (hil_test.sh diagnostics)

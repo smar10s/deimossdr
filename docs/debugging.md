@@ -147,6 +147,49 @@ aren't obvious from the A/B comparison.
 
 ---
 
+## Method: OTA IQ Capture → Replay Fork (fabric vs upstream)
+
+**When to use:** OTA decode loses a specific frame that an independent monitor
+receiver catches. "Is the loss in the fabric, upstream of it (RF/AGC/SNR), or
+in the ARM/tag-drain path?"
+
+**What it does:** Captures one long raw-ADC window around a trigger frame,
+then replays the exact IQ through (a) the RTL in sim and (b) lib80211, and
+compares both against the fabric's own OTA tag log for that window.
+
+| lib80211 | sim RTL | OTA fabric | Verdict |
+|----------|---------|-----------|---------|
+| decodes | misses | misses | **Fabric defect** — deterministic, failing vector captured |
+| decodes | decodes | misses | **Fabric state/timing or drain** during the live run |
+| misses | misses | misses | IQ/SNR unrecoverable (or the frame was never on air) |
+
+The sim replay feeds `iq_valid` at 1-in-5 (live ADC timing), so it preserves
+the live re-arm/accumulator state; replay the **whole** window, not just the
+target frame, or the state interaction is lost.
+
+**Why not cable loopback:** loopback re-modulates a *golden* vector through
+DAC→cable→ADC with fixed manual gain (D18). It cannot replay the captured OTA
+waveform and adds analog EVM — it answers a different question.
+
+**HIL caveat:** `deimos_hil_inject` feeds `iq_valid` 1-per-clock (test mode),
+not the live 1-in-5. It can mask live-timing/state bugs — use HIL to confirm a
+fix on the real netlist, not as the primary repro.
+
+**Trigger hygiene:** match the trigger frame's *direction*, not just
+rate/length. M1 (137, AP→STA) and M4 (137, STA→AP) share a length; a
+length-only trigger selects M4 windows in which the "M2 absent" check is
+trivially true. `deimos_ota_capture --trigger-dir ap` enforces this.
+
+**Drop caveat:** `deimos_ota_capture`'s post-window bulk `ring_read` stalls the
+tag drain and can overflow the 16-deep FIFO. Trust the IQ + sim/lib80211 for
+the verdict, not the capture's OTA tag log.
+
+**Tools:** `firmware/tools/deimos_ota_capture`,
+`scripts/host/ddr_capture_to_stimulus.py`, `fpga/test/diag_ota_window_replay.py`,
+`scripts/host/validate_window.c`.
+
+---
+
 ## Anti-patterns (What Doesn't Work)
 
 | Approach | Why it fails |

@@ -97,6 +97,7 @@ typedef struct {
     int    stf_threshold;
     const char *output_file;
     bool   verbose;
+    bool   acq_diag;
 } dump_config_t;
 
 static int parse_args(int argc, char *argv[], dump_config_t *cfg)
@@ -107,14 +108,16 @@ static int parse_args(int argc, char *argv[], dump_config_t *cfg)
     cfg->stf_threshold = 0;
     cfg->output_file   = NULL;
     cfg->verbose       = false;
+    cfg->acq_diag      = false;
 
     int opt;
-    while ((opt = getopt(argc, argv, "c:d:t:o:vh")) != -1) {
+    while ((opt = getopt(argc, argv, "c:d:t:o:avh")) != -1) {
         switch (opt) {
         case 'c': cfg->channel       = atoi(optarg); break;
         case 'd': cfg->duration_sec  = atoi(optarg); break;
         case 't': cfg->stf_threshold = atoi(optarg); break;
         case 'o': cfg->output_file   = optarg; break;
+        case 'a': cfg->acq_diag      = true; break;
         case 'v': cfg->verbose       = true; break;
         case 'h':
             printf("Usage: deimos_rx_dump [options]\n"
@@ -123,6 +126,8 @@ static int parse_args(int argc, char *argv[], dump_config_t *cfg)
                    "  -t threshold   STF threshold shift 0-7 (default: 0 = strictest;\n"
                    "                 each step doubles sensitivity)\n"
                    "  -o outfile     Write to file instead of stdout\n"
+                   "  -a             Acquisition diag: add found/rej per tag and\n"
+                   "                 emit timestamped acq/abort-counter events to stderr\n"
                    "  -v             Verbose diagnostics to stderr\n"
                    "  -h             Show this help\n");
             return 1;
@@ -204,9 +209,45 @@ int main(int argc, char *argv[])
     struct timespec t0;
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
+    /* Acquisition diagnostic baseline (8-bit counters, wrap). */
+    uint32_t prev_diag = hal_reg_read(REG_DEIMOS_DIAG_ACQ);
+    uint32_t prev_abort = hal_reg_read(REG_DEIMOS_DIAG_ABORT_CNT);
+
     while (!styx_shutdown_requested()) {
         if (cfg.duration_sec > 0 && elapsed_sec(&t0) >= (double)cfg.duration_sec)
             break;
+
+        if (cfg.acq_diag) {
+            uint32_t dnow = hal_reg_read(REG_DEIMOS_DIAG_ACQ);
+            uint32_t df = (DIAG_ACQ_FOUND(dnow)    - DIAG_ACQ_FOUND(prev_diag))    & 0xFF;
+            uint32_t dr = (DIAG_ACQ_REJECTED(dnow) - DIAG_ACQ_REJECTED(prev_diag)) & 0xFF;
+            if (df || dr) {
+                fprintf(stderr,
+                        "{\"acq_ts\":%.6f,\"dF\":%u,\"dR\":%u,\"found\":%u,\"rej\":%u}\n",
+                        elapsed_sec(&t0), df, dr,
+                        (unsigned)DIAG_ACQ_FOUND(dnow),
+                        (unsigned)DIAG_ACQ_REJECTED(dnow));
+            }
+            prev_diag = dnow;
+
+            /* Per-reason decode-abort counters + last SIG-parse abort snapshot. */
+            uint32_t anow  = hal_reg_read(REG_DEIMOS_DIAG_ABORT_CNT);
+            uint32_t dSig  = (DIAG_ABORT_SIG(anow)  - DIAG_ABORT_SIG(prev_abort))  & 0xFF;
+            uint32_t dRate = (DIAG_ABORT_RATE(anow) - DIAG_ABORT_RATE(prev_abort)) & 0xFF;
+            uint32_t dOw   = (DIAG_ABORT_OW(anow)   - DIAG_ABORT_OW(prev_abort))   & 0xFF;
+            uint32_t dWd   = (DIAG_ABORT_WD(anow)   - DIAG_ABORT_WD(prev_abort))   & 0xFF;
+            if (dSig || dRate || dOw || dWd) {
+                uint32_t sig = hal_reg_read(REG_DEIMOS_DIAG_ABORT_SIG);
+                uint32_t ctx = hal_reg_read(REG_DEIMOS_DIAG_ABORT_CTX);
+                fprintf(stderr,
+                        "{\"abort_ts\":%.6f,\"dSig\":%u,\"dRate\":%u,\"dOw\":%u,"
+                        "\"dWd\":%u,\"sigbits\":%u,\"phase\":%d}\n",
+                        elapsed_sec(&t0), dSig, dRate, dOw, dWd,
+                        (unsigned)DIAG_ABORT_SIGBITS(sig),
+                        (int)DIAG_ABORT_PHASE(ctx));
+            }
+            prev_abort = anow;
+        }
 
         deimos_rx_frame_t frame;
         int ret = deimos_rx_poll(&frame);
@@ -231,15 +272,20 @@ int main(int argc, char *argv[])
             char psdu_hex[2048];
             psdu_to_hex(frame.psdu, frame.psdu_len, psdu_hex, sizeof(psdu_hex));
 
+            fprintf(out, "{\"ts\":%.3f,", ts);
+            if (cfg.acq_diag) {
+                uint32_t diag = hal_reg_read(REG_DEIMOS_DIAG_ACQ);
+                fprintf(out, "\"found\":%u,\"rej\":%u,\"phase\":%d,",
+                        (unsigned)DIAG_ACQ_FOUND(diag),
+                        (unsigned)DIAG_ACQ_REJECTED(diag),
+                        (int)frame.phase_inc);
+            }
             fprintf(out,
-                "{"
-                "\"ts\":%.3f,"
                 "\"rate\":%d,"
                 "\"rate_code\":%d,"
                 "\"fcs\":%s,"
                 "\"len\":%u,"
                 "\"class\":\"%s\"",
-                ts,
                 frame.rate_mbps,
                 frame.rate_code,
                 frame.fcs_ok ? "true" : "false",

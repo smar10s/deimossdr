@@ -26,5 +26,13 @@ add_executable(deimos_rx_dump deimos_rx_dump.c)
 target_link_libraries(deimos_rx_dump ${TOOL_LIBS})
 target_link_options(deimos_rx_dump PRIVATE -static)
 
+# ONE-OFF diagnostic (M2-loss investigation): M1-triggered raw-DDR window
+# capture. Built here (needs the ARM toolchain) but deliberately NOT in the
+# `make deploy` list — deploy with a one-off scp. Delete when the
+# investigation closes.
+add_executable(deimos_ota_capture deimos_ota_capture.c)
+target_link_libraries(deimos_ota_capture ${TOOL_LIBS})
+target_link_options(deimos_ota_capture PRIVATE -static)
+
 # Platform tools (from styx submodule — RF path and DMA validation)
 add_subdirectory(platform)
