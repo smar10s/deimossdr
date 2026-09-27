@@ -11,10 +11,19 @@
 // by decode state, so back-to-back frames at SIFS timing are acquired without
 // the jitter sensitivity of the old inline pending path.
 //
-// Peak-finding strategy: identical to the proven normal-path approach.
-// After stf_end, wait PEAK_WINDOW_START samples, then search PEAK_WINDOW_LEN
-// samples for the maximum correlator metric. The max position marks the T1
-// rising edge (deterministic, noise-immune on the rising edge — not plateau).
+// Peak-finding strategy (option B, docs/acquisition-window-fix.md):
+// stf_end jitters relative to the true LTF1 metric peak by as much as -17
+// samples, and a channel-induced +34-sample lobe can be stronger than the
+// true peak. A forward-only window anchored at stf_end therefore misses the
+// true peak and selects the lobe. Instead, keep a trailing argmax over the
+// ~2*BLOCK_LEN samples preceding stf_end via a two-register ping-pong
+// (cur = running argmax of the current block, prev = final argmax of the
+// previous block), seed the search with max(cur, prev) at stf_end, then keep
+// sweeping forward to stf_end + SEARCH_POST. The effective window floats
+// between [stf_end - 2*BLOCK_LEN, stf_end + SEARCH_POST] with block phase;
+// this covers the measured peak range while stopping short of the +34 lobe.
+// The max position marks the T1 rising edge (strict > keeps the first
+// occurrence, so the rising edge wins over the plateau).
 //
 // Rearm: signals pipeline_ack to stf_detect as soon as a descriptor is pushed
 // (or a frame is rejected). This allows stf_detect to rearm within ~40 samples
@@ -52,6 +61,12 @@ module acquisition_ctrl (
     // Pipeline acknowledgment (to stf_detect — enables rearm)
     output reg         pipeline_ack,
 
+    // Estimator arming (to cfo_est.start): one pulse per ACCEPTED trigger.
+    // Ties the CFO estimate to the same single-outstanding acquisition
+    // decision that produces the descriptor, so raw frame_detect re-triggers
+    // cannot start/displace an estimate for a frame that was not acquired.
+    output reg         cfo_start,
+
     // Diagnostic
     output reg  [7:0]  diag_frames_found,   // descriptors pushed
     output reg  [7:0]  diag_frames_rejected // rejected (fifo full or metric fail)
@@ -66,10 +81,23 @@ module acquisition_ctrl (
     // transition, well within SIFS (320 samples = 16 μs).
     localparam [8:0] MIN_TRIGGER_DISTANCE = 9'd256;
 
-    // Peak search window: starts PEAK_WINDOW_START samples after stf_end,
-    // spans PEAK_WINDOW_LEN samples. Matches the proven normal-path parameters.
-    localparam [4:0] PEAK_WINDOW_START = 5'd2;
-    localparam [5:0] PEAK_WINDOW_LEN   = 6'd30;
+    // Trailing argmax block length (N) and forward search reach (B).
+    // BLOCK_LEN=16 makes the effective lower edge float in
+    // [stf_end-32, stf_end-16], inside the measured safe backward region
+    // A in [-35,-7]. SEARCH_POST=20 reaches the GI2-extended peak while
+    // stopping short of the +34 lobe (nearest at stf_end+25 for the worst
+    // measured stf_end jitter). See docs/acquisition-window-fix.md §5.
+    localparam [4:0] BLOCK_LEN    = 5'd16;
+    localparam [5:0] SEARCH_POST  = 6'd20;
+
+    // Stored metric width for the trailing argmax. The 29-bit squared
+    // magnitude only needs to be *ordered*, not measured, so keep the top
+    // 14 bits (the low 15 are noise as far as peak selection goes). This
+    // saves 30 FFs in the two history registers and was required to close
+    // placement (the untruncated form missed by 6 slices). The forward
+    // compare and the metric-floor test still use the full-width metric.
+    localparam [4:0] HIST_W     = 5'd14;
+    localparam [4:0] HIST_SHIFT = 5'd15;   // 29 - 14
 
     // Minimum metric to accept a peak (rejects noise-only windows).
     // Squared-magnitude metric (|acc|>>11)^2: 16384 = (262144>>11)^2 preserves
@@ -108,10 +136,19 @@ module acquisition_ctrl (
     reg [15:0] latched_phase_inc;  // stored CFO estimate
 
     // Peak search state
-    reg [5:0]  search_cnt;         // sample counter within search phases
-    reg        search_active;      // in the active search window
+    reg [5:0]  search_cnt;         // forward samples since stf_end
     reg [28:0] max_metric;
     reg [15:0] max_pos;
+
+    // Trailing argmax ping-pong (active from trigger accept until stf_end):
+    //   cur  = running argmax of the block currently accumulating
+    //   prev = final argmax of the previous completed block
+    // max(cur, prev) covers the trailing [BLOCK_LEN, 2*BLOCK_LEN] samples.
+    reg [4:0]        blk_cnt;      // sample index within current block
+    reg [HIST_W-1:0] cur_metric;   // top HIST_W bits of the metric
+    reg [15:0]       cur_pos;
+    reg [HIST_W-1:0] prev_metric;
+    reg [15:0]       prev_pos;
 
     // S_WAIT_STF_END timeout counter
     reg [10:0] stf_end_cnt;
@@ -130,6 +167,50 @@ module acquisition_ctrl (
     end
 
     // =========================================================
+    // Trailing argmax ping-pong
+    // =========================================================
+    // Restarted on each accepted trigger (so pre-frame metrics, e.g. a prior
+    // frame's plateau, can never leak into the seed) and ticked once per
+    // correlator metric while waiting for stf_end.
+    always @(posedge clk) begin
+        if (!rst_n) begin
+            blk_cnt     <= 5'd0;
+            cur_metric  <= {HIST_W{1'b0}};
+            cur_pos     <= 16'd0;
+            prev_metric <= {HIST_W{1'b0}};
+            prev_pos    <= 16'd0;
+        end else if (frame_detect && state == S_IDLE &&
+                     !fifo_full && trigger_distance >= MIN_TRIGGER_DISTANCE) begin
+            blk_cnt     <= 5'd0;
+            cur_metric  <= {HIST_W{1'b0}};
+            cur_pos     <= 16'd0;
+            prev_metric <= {HIST_W{1'b0}};
+            prev_pos    <= 16'd0;
+        end else if (state == S_WAIT_STF_END && corr_metric_valid) begin
+            if (blk_cnt == BLOCK_LEN - 1) begin
+                // Block complete: promote the winning sample to prev and
+                // start a fresh block.
+                if (corr_metric[28:HIST_SHIFT] > cur_metric) begin
+                    prev_metric <= corr_metric[28:HIST_SHIFT];
+                    prev_pos    <= wr_ptr;
+                end else begin
+                    prev_metric <= cur_metric;
+                    prev_pos    <= cur_pos;
+                end
+                blk_cnt    <= 5'd0;
+                cur_metric <= {HIST_W{1'b0}};
+                cur_pos    <= 16'd0;
+            end else begin
+                blk_cnt <= blk_cnt + 1'b1;
+                if (corr_metric[28:HIST_SHIFT] > cur_metric) begin
+                    cur_metric <= corr_metric[28:HIST_SHIFT];
+                    cur_pos    <= wr_ptr;
+                end
+            end
+        end
+    end
+
+    // =========================================================
     // Main FSM
     // =========================================================
     always @(posedge clk) begin
@@ -137,10 +218,10 @@ module acquisition_ctrl (
             state              <= S_IDLE;
             desc_valid         <= 0;
             pipeline_ack       <= 0;
+            cfo_start          <= 0;
             cfo_latched        <= 0;
             latched_phase_inc  <= 0;
             search_cnt         <= 0;
-            search_active      <= 0;
             max_metric         <= 0;
             max_pos            <= 0;
             stf_end_cnt        <= 0;
@@ -150,6 +231,7 @@ module acquisition_ctrl (
             // Default: deassert pulses
             desc_valid   <= 0;
             pipeline_ack <= 0;
+            cfo_start    <= 0;
 
             case (state)
                 S_IDLE: begin
@@ -158,8 +240,14 @@ module acquisition_ctrl (
                         // Accept trigger — begin acquisition
                         state         <= S_WAIT_STF_END;
                         cfo_latched   <= 0;
+                        // Arm the CFO estimator for exactly this acquisition.
+                        cfo_start     <= 1;
+                        // Clear the stored estimate too: if no fresh cfo_done
+                        // arrives before this frame's descriptor is pushed, it
+                        // must default to "no correction" (0), never inherit
+                        // the previous frame's CFO (OTA EAPOL M2/M4 loss).
+                        latched_phase_inc <= 0;
                         search_cnt    <= 0;
-                        search_active <= 0;
                         max_metric    <= 0;
                         max_pos       <= 0;
                         stf_end_cnt   <= 0;
@@ -180,8 +268,18 @@ module acquisition_ctrl (
                     end
 
                     if (stf_end) begin
+                        // Seed the forward search with the trailing argmax so
+                        // a peak that precedes stf_end can still win. Prefer
+                        // the more recent block on ties.
                         state      <= S_SEARCH;
                         search_cnt <= 0;
+                        if (prev_metric > cur_metric) begin
+                            max_metric <= {prev_metric, {HIST_SHIFT{1'b0}}};
+                            max_pos    <= prev_pos;
+                        end else begin
+                            max_metric <= {cur_metric, {HIST_SHIFT{1'b0}}};
+                            max_pos    <= cur_pos;
+                        end
                     end else if (stf_end_cnt >= STF_END_TIMEOUT) begin
                         // stf_end lost (watchdog/playback clear killed
                         // stf_end_armed) — give up, rearm, next trigger
@@ -203,39 +301,27 @@ module acquisition_ctrl (
                     end
 
                     if (corr_metric_valid) begin
-                        if (!search_active) begin
-                            // Wait for PEAK_WINDOW_START samples after stf_end
-                            if (search_cnt >= {1'b0, PEAK_WINDOW_START}) begin
-                                search_active <= 1;
-                                search_cnt    <= 0;
-                                max_metric    <= corr_metric;
-                                max_pos       <= wr_ptr;
+                        // Window already seeded at stf_end from the trailing
+                        // argmax. Sweep forward to stf_end + SEARCH_POST.
+                        if (search_cnt >= SEARCH_POST) begin
+                            // Window complete — evaluate
+                            if (max_metric >= METRIC_FLOOR) begin
+                                // Valid peak found — push descriptor
+                                desc_valid     <= 1;
+                                desc_ltf_pos   <= max_pos - {11'd0, T1_OFFSET};
+                                desc_phase_inc <= latched_phase_inc;
+                                diag_frames_found <= diag_frames_found + 1;
                             end else begin
-                                search_cnt <= search_cnt + 1;
+                                // Metric too low — noise, not a real frame
+                                diag_frames_rejected <= diag_frames_rejected + 1;
                             end
+                            pipeline_ack <= 1;  // rearm stf_detect
+                            state        <= S_IDLE;
                         end else begin
-                            // Active search window
-                            if (search_cnt >= PEAK_WINDOW_LEN) begin
-                                // Window complete — evaluate
-                                if (max_metric >= METRIC_FLOOR) begin
-                                    // Valid peak found — push descriptor
-                                    desc_valid     <= 1;
-                                    desc_ltf_pos   <= max_pos - {11'd0, T1_OFFSET};
-                                    desc_phase_inc <= latched_phase_inc;
-                                    diag_frames_found <= diag_frames_found + 1;
-                                end else begin
-                                    // Metric too low — noise, not a real frame
-                                    diag_frames_rejected <= diag_frames_rejected + 1;
-                                end
-                                pipeline_ack  <= 1;  // rearm stf_detect
-                                state         <= S_IDLE;
-                                search_active <= 0;
-                            end else begin
-                                search_cnt <= search_cnt + 1;
-                                if (corr_metric > max_metric) begin
-                                    max_metric <= corr_metric;
-                                    max_pos    <= wr_ptr;
-                                end
+                            search_cnt <= search_cnt + 1;
+                            if (corr_metric > max_metric) begin
+                                max_metric <= corr_metric;
+                                max_pos    <= wr_ptr;
                             end
                         end
                     end
