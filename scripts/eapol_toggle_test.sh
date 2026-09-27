@@ -11,13 +11,19 @@
 #   - Mac wifi configured to auto-join a known network on the target channel
 #
 # Usage:
-#   ./scripts/eapol_toggle_test.sh              # defaults: ch36, 3 toggles
-#   ./scripts/eapol_toggle_test.sh -c 149 -n 5  # ch149, 5 toggles
-#   ./scripts/eapol_toggle_test.sh -t 2          # 4x sensitive STF threshold
+#   ./scripts/eapol_toggle_test.sh                 # ch36, 15 toggles, STA gate 80%
+#   ./scripts/eapol_toggle_test.sh -c 149 -n 20    # ch149, 20 toggles
+#   ./scripts/eapol_toggle_test.sh -t 2            # 4x sensitive STF threshold
+#   ./scripts/eapol_toggle_test.sh -g 60           # gate each STA role at 60%
 #
 # Output:
 #   - Per-frame JSONL to stdout (for piping/analysis)
 #   - Summary to stderr (EAPOL count, class breakdown, FCS stats)
+#   - One JSON entry appended to logs/hardware.jsonl (event "eapol_toggle")
+#
+# Gate: each STA role (M2/M4) must reach >= -g% of N_TOGGLES. Exits nonzero
+# and logs blocked:true on failure. AP roles are reported, not gated (today's
+# OTA loss is AP-side; the STA gate is the regression metric).
 
 set -euo pipefail
 
@@ -29,10 +35,12 @@ WIFI_IFACE="en0"
 
 # Defaults
 CHANNEL=36
-N_TOGGLES=3
+N_TOGGLES=15
 STF_THRESH=0
+STA_GATE_PCT=80
 POST_TOGGLE_SEC=5
 INTER_TOGGLE_SEC=2
+ACQ_DIAG=""
 
 usage() {
     echo "Usage: $0 [options]"
@@ -40,21 +48,31 @@ usage() {
     echo "  -c channel     WiFi channel (default: $CHANNEL)"
     echo "  -n toggles     Number of wifi off/on cycles (default: $N_TOGGLES)"
     echo "  -t threshold   STF sensitivity 0-7 (default: $STF_THRESH)"
+    echo "  -g pct         Per-role STA capture gate, 0-100 (default: $STA_GATE_PCT)"
+    echo "  -a             Acquisition diag (-a): per-tag found/rej/phase and"
+    echo "                 timestamped acq/abort events on stderr (A/B analysis)"
     echo "  -h             Show this help"
     echo ""
     echo "Each toggle triggers a 4-way EAPOL handshake (4 frames)."
     echo "Expected EAPOL count: 4 x N_TOGGLES = $((4 * N_TOGGLES))"
 }
 
-while getopts "c:n:t:h" opt; do
+while getopts "c:n:t:g:ah" opt; do
     case $opt in
         c) CHANNEL=$OPTARG ;;
         n) N_TOGGLES=$OPTARG ;;
         t) STF_THRESH=$OPTARG ;;
+        g) STA_GATE_PCT=$OPTARG ;;
+        a) ACQ_DIAG="-a" ;;
         h) usage; exit 0 ;;
         *) usage; exit 1 ;;
     esac
 done
+
+case "$STA_GATE_PCT" in
+    ''|*[!0-9]*) echo "ERROR: -g must be an integer 0-100" >&2; exit 2 ;;
+esac
+[ "$STA_GATE_PCT" -le 100 ] || { echo "ERROR: -g must be <= 100" >&2; exit 2; }
 
 # Sanity checks
 preflight
@@ -84,7 +102,7 @@ trap 'rm -f "$TMPFILE"; pluto_ssh "killall deimos_rx_dump 2>/dev/null" 2>/dev/nu
 
 # Start deimos_rx_dump on Pluto via SSH, capture JSONL output locally
 echo "Starting deimos_rx_dump on ch${CHANNEL} (${DURATION}s)..." >&2
-pluto_ssh "deimos_rx_dump -c $CHANNEL -t $STF_THRESH -d $DURATION" > "$TMPFILE" &
+pluto_ssh "deimos_rx_dump -c $CHANNEL -t $STF_THRESH $ACQ_DIAG -d $DURATION" > "$TMPFILE" &
 DUMP_SSH_PID=$!
 
 # Let radio settle
@@ -207,4 +225,43 @@ else:
     else:
         print(f'  HINT: Mgmt decoded but no EAPOL — timing/channel mismatch?', file=sys.stderr)
 print(f'============================================================', file=sys.stderr)
-" 2>&2
+" 2>&2 || true
+
+# --- 4-way handshake completeness + per-role STA gate ---------------------
+# The toggle test's failure mode is losing the STA responses (M2/M4); each STA
+# role is gated. AP roles are reported but not gated — today's OTA loss is
+# AP-side, so gating AP would fail by construction. AP/STA MACs are inferred
+# from the capture (STA MAC passed from en0 when available).
+STA_MAC=$(ifconfig "$WIFI_IFACE" 2>/dev/null | awk '/ether/{print $2; exit}')
+echo "" >&2
+AB_JSON=$(python3 "$SCRIPT_DIR/eapol_ab_summary.py" "$TMPFILE" "$N_TOGGLES" "$STA_MAC" --json)
+python3 "$SCRIPT_DIR/eapol_ab_summary.py" "$TMPFILE" "$N_TOGGLES" "$STA_MAC" >&2
+
+M1_RATE=$(json_get "$AB_JSON" "roles.M1.rate")
+M2_RATE=$(json_get "$AB_JSON" "roles.M2.rate")
+M3_RATE=$(json_get "$AB_JSON" "roles.M3.rate")
+M4_RATE=$(json_get "$AB_JSON" "roles.M4.rate")
+
+STA_FAIL=0
+if [ "$M2_RATE" -lt "$STA_GATE_PCT" ]; then
+    STA_FAIL=1
+    echo "  GATE FAIL: STA role M2 at ${M2_RATE}% < ${STA_GATE_PCT}%" >&2
+fi
+if [ "$M4_RATE" -lt "$STA_GATE_PCT" ]; then
+    STA_FAIL=1
+    echo "  GATE FAIL: STA role M4 at ${M4_RATE}% < ${STA_GATE_PCT}%" >&2
+fi
+
+if [ "$STA_FAIL" -eq 0 ]; then
+    RESULT="PASS"; BLOCKED="false"
+    echo "  VERDICT: PASS — STA M2=${M2_RATE}% M4=${M4_RATE}% (gate ${STA_GATE_PCT}%)" >&2
+else
+    RESULT="FAIL"; BLOCKED="true"
+    echo "  VERDICT: FAIL — STA capture below the ${STA_GATE_PCT}% gate" >&2
+fi
+
+hwlog "eapol_toggle" "\"toggles\":$N_TOGGLES,\"expected_per_role\":$N_TOGGLES,\"sta_gate\":$STA_GATE_PCT,\"m1_rate\":$M1_RATE,\"m2_rate\":$M2_RATE,\"m3_rate\":$M3_RATE,\"m4_rate\":$M4_RATE,\"result\":\"$RESULT\",\"blocked\":$BLOCKED"
+echo "  Results logged to: logs/hardware.jsonl (event eapol_toggle)" >&2
+
+[ "$BLOCKED" = "false" ] || exit 1
+exit 0

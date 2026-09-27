@@ -691,6 +691,64 @@ diag_power_ratio:
 		VERILOG_SOURCES="$(RX_FRONTEND_SRCS)" \
 		COCOTB_TEST_MODULES=diag_power_ratio
 
+# Per-frame CFO step across a SIFS pair (M1 AP -> M2 STA). Reads the RTL
+# abort snapshot to check whether frame 2's L-SIG parity fails, reproducing
+# the OTA EAPOL loss (0x13E1). See STATUS.md Next Steps #1.
+.PHONY: diag_sifs_cfo_step
+diag_sifs_cfo_step:
+	$(MAKE) sim SIM_BUILD=sim_build_rx_frontend \
+		TOPLEVEL=rx_frontend \
+		VERILOG_SOURCES="$(RX_FRONTEND_SRCS)" \
+		COCOTB_TEST_MODULES=diag_sifs_cfo_step
+
+# Co-channel interferer summed over the target M2 preamble, slid in time.
+# Tests the surviving hypothesis left after diag_sifs_cfo_step was falsified:
+# overlapping (not merely stepped) energy biases the coarse estimate.
+.PHONY: diag_cochannel_overlap
+diag_cochannel_overlap:
+	$(MAKE) sim SIM_BUILD=sim_build_rx_frontend \
+		TOPLEVEL=rx_frontend \
+		VERILOG_SOURCES="$(RX_FRONTEND_SRCS)" \
+		COCOTB_TEST_MODULES=diag_cochannel_overlap
+
+# Class-A acquisition measurement: is a second, correctly-timed M2 acquisition
+# reachable? Reports acquisition_ctrl descriptor counts (port-level) + which
+# frame's LTF was acquired. Sim-only, no RTL change. SIM_BUILD name matches the
+# `waves` target's convention so `make waves TARGET=diag_class_a_acquisition`
+# rebuilds with tracing.
+.PHONY: diag_class_a_acquisition
+diag_class_a_acquisition:
+	$(MAKE) sim SIM_BUILD=sim_build_diag_class_a_acquisition \
+		TOPLEVEL=rx_frontend \
+		VERILOG_SOURCES="$(RX_FRONTEND_SRCS)" \
+		COCOTB_TEST_MODULES=diag_class_a_acquisition
+
+# Replay a captured OTA raw-DDR window (deimos_ota_capture + the host converter)
+# through the fabric and compare the OTA tag log with the sim tag set. The
+# fabric-vs-upstream decision fork. Set OTA_WINDOW_JSON to the stimulus path.
+.PHONY: diag_ota_window_replay
+diag_ota_window_replay:
+	$(MAKE) sim SIM_BUILD=sim_build_rx_frontend \
+		TOPLEVEL=rx_frontend \
+		VERILOG_SOURCES="$(RX_FRONTEND_SRCS)" \
+		COCOTB_TEST_MODULES=diag_ota_window_replay
+
+.PHONY: diag_lsig_constellation
+diag_lsig_constellation:
+	$(MAKE) sim SIM_BUILD=sim_build_rx_frontend \
+		TOPLEVEL=rx_frontend \
+		VERILOG_SOURCES="$(RX_FRONTEND_SRCS)" \
+		COCOTB_TEST_MODULES=diag_lsig_constellation
+
+# Wrong per-frame CFO applied to a clean frame: closes the causal link from a
+# stale/wrong descriptor phase_inc to an S_PARSE_SIGNAL abort (OTA 0x13E1).
+.PHONY: diag_stale_cfo_abort
+diag_stale_cfo_abort:
+	$(MAKE) sim SIM_BUILD=sim_build_diag_stale_cfo \
+		TOPLEVEL=rx_pipeline \
+		VERILOG_SOURCES="$(RTL)/rx_pipeline.v $(RTL)/acquisition_ctrl.v $(RTL)/frame_fifo.v $(RTL)/decode_engine.v $(RTL)/cfo_mixer.v $(RTL)/ltf_correlator.v $(RTL)/ltf_rom32.v $(RTL)/ltf_peak_detect.v $(RTL)/fft64_sdf.v $(RTL)/chan_est.v $(RTL)/equalizer.v $(RTL)/pilot_track.v $(RTL)/cordic_atan2_sm.v $(RTL)/cordic_rotate.v $(RTL)/demap_mux.v $(RTL)/demapper.v $(RTL)/deinterleaver.v $(RTL)/depuncturer.v $(RTL)/soft_pairer.v $(RTL)/vit_fifo.v $(RTL)/viterbi_k7.v $(RTL)/descrambler.v $(RTL)/fcs_check.v $(RTL)/psdu_packer.v" \
+		COCOTB_TEST_MODULES=diag_stale_cfo_abort
+
 # ---- Waveform generation ----
 
 WAVES_DIR := $(CURDIR)/waves
@@ -708,7 +766,10 @@ endif
 	@SIM_DIR="sim_build_$$(echo $(TARGET) | sed 's/^test_//')"; \
 	if [ -d "$$SIM_DIR" ]; then rm -rf "$$SIM_DIR"; fi
 	@echo "=== Generating VCD for $(TARGET) ==="
-	@$(MAKE) $(TARGET) WAVES=1 $(if $(TESTCASE),TESTCASE=$(TESTCASE))
+	@# Verilator needs VERILATOR_TRACE=1 (cocotb's WAVES=1 only applies to
+	@# Riviera/Questa). Pass the right one so `make waves` actually dumps a VCD.
+	@$(MAKE) $(TARGET) $(if $(filter verilator,$(SIM)),VERILATOR_TRACE=1,WAVES=1) \
+		$(if $(TESTCASE),TESTCASE=$(TESTCASE))
 	@mkdir -p $(WAVES_DIR)
 	@VCD=$$(find . -maxdepth 2 -name '*.vcd' -newer Makefile 2>/dev/null | head -1); \
 	if [ -z "$$VCD" ]; then \

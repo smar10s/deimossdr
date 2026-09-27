@@ -267,6 +267,146 @@ async def test_two_frames_tight_gap(dut):
 
 
 @cocotb.test()
+async def test_no_fresh_cfo_does_not_inherit_prior_phase(dut):
+    """Accepted trigger with no fresh cfo_done must not carry the prior
+
+    Regression for the OTA EAPOL M2/M4 loss (branch fix/eapol-capture): the lost
+    response frames latched the *preceding* AP frame's phase_inc because
+    latched_phase_inc was not cleared on trigger accept and no fresh estimate
+    arrived before the descriptor was pushed. A frame with no estimate must
+    default to no correction (0), never inherit the previous frame's value.
+    """
+    clock = Clock(dut.clk, 10, unit="ns")
+    cocotb.start_soon(clock.start())
+    await reset_dut(dut)
+
+    # Satisfy initial trigger distance
+    for _ in range(300):
+        dut.corr_metric_valid.value = 1
+        dut.corr_metric.value = 0x10000
+        dut.wr_ptr.value = 0
+        await RisingEdge(dut.clk)
+        dut.corr_metric_valid.value = 0
+        for _ in range(4):
+            await RisingEdge(dut.clk)
+
+    # --- Frame 1: fresh CFO estimate 0x0100 ---
+    await pulse(dut, dut.frame_detect)
+    dut.cfo_done.value = 1
+    dut.phase_inc.value = 0x0100
+    await RisingEdge(dut.clk)
+    dut.cfo_done.value = 0
+
+    descs1, wr = await drive_rising_edge_profile(dut, stf_end_delay=30,
+                                                 start_wr_ptr=100)
+    assert len(descs1) == 1, f"frame 1: expected 1 descriptor, got {len(descs1)}"
+    assert descs1[0]['phase_inc'] == 0x0100, \
+        f"frame 1: CFO mismatch {descs1[0]['phase_inc']:#x}"
+
+    # Inter-frame gap > MIN_TRIGGER_DISTANCE (256)
+    for _ in range(260):
+        dut.corr_metric_valid.value = 1
+        dut.corr_metric.value = 0x10000
+        dut.wr_ptr.value = wr & 0x7FFF
+        wr += 1
+        await RisingEdge(dut.clk)
+        dut.corr_metric_valid.value = 0
+        for _ in range(4):
+            await RisingEdge(dut.clk)
+
+    # --- Frame 2: accepted trigger, but NO fresh cfo_done ---
+    await pulse(dut, dut.frame_detect)
+    descs2, _ = await drive_rising_edge_profile(dut, stf_end_delay=30,
+                                                start_wr_ptr=wr)
+
+    assert len(descs2) == 1, f"frame 2: expected 1 descriptor, got {len(descs2)}"
+    assert descs2[0]['phase_inc'] == 0, \
+        (f"frame 2 inherited the prior frame's CFO "
+         f"({descs2[0]['phase_inc']:#06x}); with no fresh estimate it must be 0")
+    dut._log.info("PASS: no-inherit — frame 2 phase_inc=0 with no fresh cfo_done")
+
+
+@cocotb.test()
+async def test_cfo_start_arms_once_per_accepted_trigger(dut):
+    """Ownership: cfo_start pulses once per accepted trigger, never on reject.
+
+    The estimator belongs to the acquisition FSM. It must be armed only when a
+    trigger is *accepted* (so the estimate binds to the same single-outstanding
+    decision that pushes the descriptor), and must not be armed for triggers
+    rejected by holdoff or FIFO backpressure.
+    """
+    clock = Clock(dut.clk, 10, unit="ns")
+    cocotb.start_soon(clock.start())
+    await reset_dut(dut)
+
+    starts = 0
+
+    async def monitor():
+        nonlocal starts
+        while True:
+            await RisingEdge(dut.clk)
+            try:
+                if int(dut.cfo_start.value) == 1:
+                    starts += 1
+            except (ValueError, AttributeError):
+                pass
+
+    cocotb.start_soon(monitor())
+
+    # Satisfy initial trigger distance
+    for _ in range(300):
+        dut.corr_metric_valid.value = 1
+        dut.corr_metric.value = 0x10000
+        dut.wr_ptr.value = 0
+        await RisingEdge(dut.clk)
+        dut.corr_metric_valid.value = 0
+        for _ in range(4):
+            await RisingEdge(dut.clk)
+
+    # --- Accept: exactly one cfo_start ---
+    await pulse(dut, dut.frame_detect)
+    await ClockCycles(dut.clk, 5)
+    assert starts == 1, f"accepted trigger must arm estimator once, got {starts}"
+
+    # Complete the acquisition so the FSM returns to IDLE
+    _, wr = await drive_rising_edge_profile(dut, stf_end_delay=30,
+                                            start_wr_ptr=100)
+    await ClockCycles(dut.clk, 5)
+    assert starts == 1, f"descriptor push must not re-arm, got {starts}"
+
+    # --- Reject via FIFO backpressure: no cfo_start ---
+    for _ in range(300):
+        dut.corr_metric_valid.value = 1
+        dut.corr_metric.value = 0x10000
+        dut.wr_ptr.value = wr & 0x7FFF
+        wr += 1
+        await RisingEdge(dut.clk)
+        dut.corr_metric_valid.value = 0
+        for _ in range(4):
+            await RisingEdge(dut.clk)
+    dut.fifo_full.value = 1
+    await pulse(dut, dut.frame_detect)
+    await ClockCycles(dut.clk, 5)
+    assert starts == 1, f"fifo_full reject must not arm estimator, got {starts}"
+    dut.fifo_full.value = 0
+
+    # --- Accept again: second cfo_start ---
+    for _ in range(300):
+        dut.corr_metric_valid.value = 1
+        dut.corr_metric.value = 0x10000
+        dut.wr_ptr.value = wr & 0x7FFF
+        wr += 1
+        await RisingEdge(dut.clk)
+        dut.corr_metric_valid.value = 0
+        for _ in range(4):
+            await RisingEdge(dut.clk)
+    await pulse(dut, dut.frame_detect)
+    await ClockCycles(dut.clk, 5)
+    assert starts == 2, f"second accept must arm estimator, got {starts}"
+    dut._log.info("PASS: cfo_start armed exactly once per accepted trigger")
+
+
+@cocotb.test()
 async def test_duplicate_suppression(dut):
     """Trigger within holdoff distance → rejected, no descriptor."""
     clock = Clock(dut.clk, 10, unit="ns")
@@ -511,3 +651,192 @@ async def test_stf_end_timeout(dut):
 
     dut._log.info(f"PASS: stf_end timeout released wedge (rejected={rejected}), "
                   "next frame acquired cleanly")
+
+
+# =========================================================
+# OTA AP-frame loss bench (option B; see docs/acquisition-window-fix.md).
+# Sweeps the measured stf_end-jitter envelope so this is not one hand-picked
+# point: the (tap, window, T1_OFFSET) triple is one mechanism (D29).
+# =========================================================
+
+async def drive_late_stf_end_profile(dut, truth_n=150, se_n=159, start_wr_ptr=100,
+                                     true_metric=0x700000, hazard_metric=0x850000,
+                                     hazard_off=34, ltf2_off=64):
+    """Drive the OTA AP-frame geometry: true LTF1 peak that may precede
+    stf_end, plus a stronger channel-induced +34 lobe.
+
+    Measured on real captures (docs/acquisition-window-fix.md §2):
+      - the true LTF1 metric peak lands se_n - truth_n in [-17, +9];
+      - a +34-sample lobe can be ~1.2x STRONGER than the true peak at 16 taps
+        (0.76x at 32, 0.00x at 64 -> a 16-tap/channel artifact).
+    A correct window must cover the true peak and exclude the +34 lobe.
+
+    Metric profile: narrow triangular lobes at truth_n, truth_n+hazard_off
+    (+34) and truth_n+ltf2_off (+64, the LTF2 peak); noise floor elsewhere.
+    stf_end is pulsed at se_n.
+    """
+    FLOOR = 0x1000   # below METRIC_FLOOR (0x4000)
+    base = start_wr_ptr
+    wr = base
+    hazard_n = truth_n + hazard_off
+    ltf2_n   = truth_n + ltf2_off
+    descriptors = []
+
+    async def tick(metric, stf_end_here=False):
+        nonlocal wr
+        for clk_cycle in range(5):
+            await RisingEdge(dut.clk)
+            dut.stf_end.value = 1 if (stf_end_here and clk_cycle == 0) else 0
+            if clk_cycle == 0:
+                dut.corr_metric_valid.value = 1
+                dut.corr_metric.value = metric
+                dut.wr_ptr.value = wr & 0x7FFF
+                wr += 1
+            else:
+                dut.corr_metric_valid.value = 0
+            try:
+                if int(dut.desc_valid.value) == 1:
+                    descriptors.append({
+                        'ltf_pos': int(dut.desc_ltf_pos.value),
+                        'phase_inc': int(dut.desc_phase_inc.value),
+                    })
+            except (ValueError, AttributeError):
+                pass
+
+    def metric_at(n):
+        for centre, peak in ((truth_n, true_metric),
+                             (hazard_n, hazard_metric),
+                             (ltf2_n, true_metric)):
+            if abs(n - centre) <= 2:
+                return peak - abs(n - centre) * (peak // 4)
+        return FLOOR
+
+    end = max(se_n, ltf2_n) + 40
+    for n in range(0, end):
+        await tick(metric_at(n), stf_end_here=(n == se_n))
+    return descriptors, base
+
+
+async def drive_cold_priming_profile(dut, det_to_se=100, peak_se_offset=13,
+                                     start_wr_ptr=100, peak_metric=0x800000):
+    """HIL cold-priming geometry: no synthetic lead-in.
+
+    On the Pluto, stf_detect.soft_clear is wired to hil_ctrl.playback_start,
+    which zeroes sample_cnt and restarts the 82-sample correlation-window
+    priming *inside* the preamble. Measured on the golden vector:
+    frame_detect -> true peak = 113 samples, and true peak = stf_end + 13.
+
+    A det-anchored window (option A, rejected) breaks here because the
+    soft_clear-induced shift moves the peak outside [det+132, det+172]. An
+    se-anchored window is immune: this bench fires frame_detect from reset
+    (no 300-sample prime), places the peak at stf_end + 13, and requires the
+    descriptor to carry the true-peak-derived T1.
+
+    Metric profile: narrow triangular peak at det_to_se + peak_se_offset,
+    noise floor elsewhere; stf_end is pulsed at det_to_se.
+    """
+    FLOOR = 0x1000   # below METRIC_FLOOR (0x4000)
+    base = start_wr_ptr
+    wr = base
+    peak_n = det_to_se + peak_se_offset
+    descriptors = []
+
+    async def tick(metric, stf_end_here=False):
+        nonlocal wr
+        for clk_cycle in range(5):
+            await RisingEdge(dut.clk)
+            dut.stf_end.value = 1 if (stf_end_here and clk_cycle == 0) else 0
+            if clk_cycle == 0:
+                dut.corr_metric_valid.value = 1
+                dut.corr_metric.value = metric
+                dut.wr_ptr.value = wr & 0x7FFF
+                wr += 1
+            else:
+                dut.corr_metric_valid.value = 0
+            try:
+                if int(dut.desc_valid.value) == 1:
+                    descriptors.append({
+                        'ltf_pos': int(dut.desc_ltf_pos.value),
+                        'phase_inc': int(dut.desc_phase_inc.value),
+                    })
+            except (ValueError, AttributeError):
+                pass
+
+    def metric_at(n):
+        if abs(n - peak_n) <= 2:
+            return peak_metric - abs(n - peak_n) * (peak_metric // 4)
+        return FLOOR
+
+    for n in range(0, det_to_se + 32):
+        await tick(metric_at(n), stf_end_here=(n == det_to_se))
+    return descriptors, base, peak_n
+
+
+@cocotb.test()
+async def test_cold_priming_geometry_finds_peak_after_stf_end(dut):
+    """Cold-priming (HIL) geometry: peak arrives AFTER stf_end.
+
+    Regression guard against re-anchoring to frame_detect (option A). No
+    lead-in priming; stf_end at det+100, true peak at stf_end+13. The
+    descriptor must equal true_peak - T1_OFFSET (19). See
+    docs/acquisition-window-fix.md §4/§6.
+    """
+    clock = Clock(dut.clk, 10, unit="ns")
+    cocotb.start_soon(clock.start())
+    await reset_dut(dut)
+
+    await pulse(dut, dut.frame_detect)
+
+    descriptors, base, peak_n = await drive_cold_priming_profile(
+        dut, det_to_se=100, peak_se_offset=13, start_wr_ptr=100)
+
+    assert len(descriptors) == 1, f"Expected 1 descriptor, got {len(descriptors)}"
+    expected_ltf = (base + peak_n - 19) & 0xFFFF
+    got = descriptors[0]['ltf_pos']
+    dut._log.info(f"cold-priming: got ltf_pos={got}, expected {expected_ltf} "
+                  f"(peak@{base + peak_n} = det+{peak_n})")
+    assert got == expected_ltf, (
+        f"cold-priming T1 {got} != true-peak-derived {expected_ltf}: the "
+        f"window did not resolve the peak at stf_end+13 (option-A det-anchor "
+        f"regression).")
+
+
+@cocotb.test()
+async def test_late_stf_end_selects_true_peak_not_late_lobe(dut):
+    """OTA AP-frame loss: sweep the measured stf_end-jitter envelope.
+
+    The true LTF1 metric peak sits se - truth in [-17, +9] relative to
+    stf_end, and a channel-induced +34 lobe can be ~1.2x stronger than it at
+    16 taps. A forward-only stf_end window selects that lobe; option B must
+    return the true-peak-derived T1 (true_peak - T1_OFFSET=19) at every point
+    in the envelope, across block phases. The three knobs (taps, window,
+    T1_OFFSET) are one mechanism (D29), so the bench sweeps, not spot-checks.
+    """
+    clock = Clock(dut.clk, 10, unit="ns")
+    cocotb.start_soon(clock.start())
+
+    cases = 0
+    for d in (-17, -13, -9, -5, -1, 3, 5, 7, 9):   # se - truth_peak
+        for phase in (0, 4, 8, 12):                # stf_end block phase
+            await reset_dut(dut)
+            await pulse(dut, dut.frame_detect)
+            se_n = 159 + phase
+            truth_n = se_n - d
+            descriptors, base = await drive_late_stf_end_profile(
+                dut, truth_n=truth_n, se_n=se_n, start_wr_ptr=100)
+
+            assert len(descriptors) == 1, (
+                f"d={d:+d} phase={phase}: expected 1 descriptor, "
+                f"got {len(descriptors)}")
+            true_peak = base + truth_n
+            expected = (true_peak - 19) & 0xFFFF
+            got = descriptors[0]['ltf_pos']
+            assert got == expected, (
+                f"d={d:+d} phase={phase}: acquired T1 {got} != true-peak-derived "
+                f"{expected}; the window selected the +34 lobe @{base + truth_n + 34} "
+                f"instead of the true peak @{true_peak} (se@{base + se_n}). "
+                f"This is the OTA AP-frame loss geometry.")
+            cases += 1
+
+    dut._log.info(f"late-stf_end sweep: {cases} cases over d in [-17,+9] "
+                  "x block phase, all resolve the true peak")
