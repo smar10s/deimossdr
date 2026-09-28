@@ -251,6 +251,13 @@ The RTL is plain Verilog under `fpga/rtl/`, tested with cocotb under
 `fpga/test/`, against golden vectors from the `extern/lib80211`
 submodule. `platform/styx` is the platform submodule (DMA, HIL, snap).
 
+## Thanks
+
+Jinghao Shi and [OpenOFDM](https://github.com/jhshi/openofdm) for the reference
+implementation.
+
+[Robin Getz](https://github.com/rgetz) for his work on/with the PlutoSDR.
+
 ## License
 
 MIT — see `LICENSE`. Submodules (`extern/lib80211`, `platform/styx`)
