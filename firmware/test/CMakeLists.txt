@@ -21,6 +21,7 @@ add_library(rx_test_stubs OBJECT
     stubs.c
 )
 target_include_directories(rx_test_stubs PUBLIC ${TEST_INCLUDE_DIRS})
+target_link_libraries(rx_test_stubs PUBLIC Threads::Threads)
 
 macro(add_firmware_test name)
     add_executable(${name} ${name}.c)
@@ -34,6 +35,9 @@ add_firmware_test(test_parse_header)
 
 # --- Phase 4: IE parsing ---
 add_firmware_test(test_parse_ies)
+
+# --- Serialized radio transaction: hold/release and poll concurrency ---
+add_firmware_test(test_rx_hold)
 
 # --- deimos_tool: JSON waveform parser (malformed-input hardening) ---
 add_executable(test_waveform_parse

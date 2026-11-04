@@ -12,6 +12,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <stdio.h>
+#include <pthread.h>
 
 /* --------------------------------------------------------------------------
  * Timing constants (microseconds)
@@ -47,6 +48,13 @@ static deimos_radio_config_t    g_radio_cfg;
 static deimos_pipeline_config_t g_pipeline_cfg;
 static bool g_initialized = false;
 
+/* Serializes frame reads against radio reconfiguration.  A transaction
+ * holds the mutex from hold() to release(), so the poll thread cannot be
+ * between the TAG_HI pop and the PSDU read when STF is disabled. */
+static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
+static bool g_held = false;
+static _Thread_local bool t_holds_lock = false;
+
 /* --------------------------------------------------------------------------
  * Utilities
  * -------------------------------------------------------------------------- */
@@ -75,6 +83,68 @@ uint64_t deimos_rx_channel_to_freq(int ch)
     return (5000 + ch * 5) * 1000000ULL;
 }
 
+int deimos_rx_freq_to_channel(uint64_t freq_hz)
+{
+    /* Round to the nearest channel centre.  The AD9361 reports a centre a
+     * few Hz below the requested value (2436.999998 for 2437 MHz), so
+     * truncating to whole MHz would select the previous channel. */
+    if (freq_hz >= 2412000000ULL && freq_hz <= 2484000000ULL) {
+        /* Channel 14 sits alone at 2484, 12 MHz above channel 13. */
+        if (freq_hz >= 2478000000ULL)
+            return 14;
+        int ch = (int)((freq_hz - 2412000000ULL + 2500000ULL) / 5000000ULL) + 1;
+        return ch > 13 ? 13 : ch;
+    }
+    if (freq_hz >= 5000000000ULL && freq_hz <= 5900000000ULL)
+        return (int)((freq_hz - 5000000000ULL + 2500000ULL) / 5000000ULL);
+    return 1;
+}
+
+/* --------------------------------------------------------------------------
+ * Lock and register helpers
+ *
+ * txn_lock() is a no-op when this thread already holds the transaction, so
+ * note_*() and deimos_rx_flush() can be called from inside hold()/release()
+ * without deadlocking.  Every other caller blocks until the transaction is
+ * released.
+ * -------------------------------------------------------------------------- */
+
+static bool txn_lock(void)
+{
+    if (t_holds_lock)
+        return false;
+    pthread_mutex_lock(&g_lock);
+    t_holds_lock = true;
+    return true;
+}
+
+static void txn_unlock(bool locked)
+{
+    if (!locked)
+        return;
+    t_holds_lock = false;
+    pthread_mutex_unlock(&g_lock);
+}
+
+static void stf_disable_locked(void)
+{
+    hal_reg_write(REG_DEIMOS_STF_ENABLE, 0);
+    usleep(DEIMOS_WATCHDOG_HOLD_US);
+}
+
+static void stf_enable_locked(void)
+{
+    hal_reg_write(REG_DEIMOS_STF_ENABLE, 1);
+    usleep(DEIMOS_REG_SETTLE_US);
+}
+
+static void flush_locked(void)
+{
+    hal_reg_write(REG_TAG_FIFO_CONTROL, TAG_CTRL_FLUSH);
+    usleep(DEIMOS_REG_SETTLE_US);
+    hal_reg_write(REG_TAG_FIFO_CONTROL, 0);
+}
+
 /* --------------------------------------------------------------------------
  * Core Primitive 1: Radio Init
  *
@@ -87,8 +157,11 @@ uint64_t deimos_rx_channel_to_freq(int ch)
 
 int deimos_radio_init(const deimos_radio_config_t *cfg)
 {
-    if (hal_init() != 0)
+    bool locked = txn_lock();
+    if (hal_init() != 0) {
+        txn_unlock(locked);
         return -1;
+    }
 
     memcpy(&g_radio_cfg, cfg, sizeof(g_radio_cfg));
 
@@ -139,6 +212,7 @@ int deimos_radio_init(const deimos_radio_config_t *cfg)
     }
 
     g_initialized = true;
+    txn_unlock(locked);
     return 0;
 }
 
@@ -155,6 +229,7 @@ int deimos_radio_init(const deimos_radio_config_t *cfg)
 
 void deimos_pipeline_arm(const deimos_pipeline_config_t *cfg)
 {
+    bool locked = txn_lock();
     memcpy(&g_pipeline_cfg, cfg, sizeof(g_pipeline_cfg));
 
     /* Set mode: test_mode for HIL, 0 for live ADC */
@@ -162,8 +237,7 @@ void deimos_pipeline_arm(const deimos_pipeline_config_t *cfg)
                   cfg->mode == DEIMOS_RX_MODE_HIL ? HIL_CTRL_TEST_MODE : 0);
 
     /* Disable STF — zeros accumulators, forces the decode pipeline to IDLE */
-    hal_reg_write(REG_DEIMOS_STF_ENABLE, 0);
-    usleep(DEIMOS_WATCHDOG_HOLD_US);
+    stf_disable_locked();
 
     /* Pipeline timing register (safe to write while STF disabled) */
     hal_reg_write(REG_DEIMOS_STF_THRESH, cfg->stf_threshold);
@@ -175,9 +249,8 @@ void deimos_pipeline_arm(const deimos_pipeline_config_t *cfg)
      * in rx_pipeline.v). The struct fields remain for source compatibility. */
 
     /* Flush tag FIFO — discard any stale tags from prior decode */
-    hal_reg_write(REG_TAG_FIFO_CONTROL, TAG_CTRL_FLUSH);
-    usleep(DEIMOS_REG_SETTLE_US);
-    hal_reg_write(REG_TAG_FIFO_CONTROL, 0);
+    flush_locked();
+    txn_unlock(locked);
 }
 
 /* --------------------------------------------------------------------------
@@ -190,6 +263,8 @@ void deimos_pipeline_arm(const deimos_pipeline_config_t *cfg)
 
 int deimos_stf_gate(deimos_trigger_t trigger)
 {
+    bool locked = txn_lock();
+
     /* Enable STF — starts correlator accumulation */
     hal_reg_write(REG_DEIMOS_STF_ENABLE, 1);
 
@@ -203,6 +278,7 @@ int deimos_stf_gate(deimos_trigger_t trigger)
         /* Cable loopback — fire DMA TX */
         if (dma_tx_trigger() != 0) {
             fprintf(stderr, "deimos_rx: dma_tx_trigger failed\n");
+            txn_unlock(locked);
             return -1;
         }
         break;
@@ -214,6 +290,7 @@ int deimos_stf_gate(deimos_trigger_t trigger)
         break;
     }
 
+    txn_unlock(locked);
     return 0;
 }
 
@@ -224,10 +301,15 @@ int deimos_stf_gate(deimos_trigger_t trigger)
 int deimos_rx_start(const deimos_radio_config_t *radio,
                     const deimos_pipeline_config_t *pipeline)
 {
-    if (deimos_radio_init(radio) != 0)
+    bool locked = txn_lock();
+    if (deimos_radio_init(radio) != 0) {
+        txn_unlock(locked);
         return -1;
+    }
     deimos_pipeline_arm(pipeline);
-    return deimos_stf_gate(DEIMOS_TRIGGER_NONE);
+    int rc = deimos_stf_gate(DEIMOS_TRIGGER_NONE);
+    txn_unlock(locked);
+    return rc;
 }
 
 /* --------------------------------------------------------------------------
@@ -236,141 +318,250 @@ int deimos_rx_start(const deimos_radio_config_t *radio,
 
 void deimos_rx_cleanup(void)
 {
+    bool locked = txn_lock();
     if (g_initialized) {
         hal_reg_write(REG_DEIMOS_STF_ENABLE, 0);
         hal_cleanup();
         g_initialized = false;
     }
+    txn_unlock(locked);
 }
 
 /* --------------------------------------------------------------------------
- * Hot reconfigure
+ * Serialized radio transaction
+ * -------------------------------------------------------------------------- */
+
+int deimos_rx_hold(void)
+{
+    if (t_holds_lock)
+        return -1;
+
+    pthread_mutex_lock(&g_lock);
+    t_holds_lock = true;
+    if (!g_initialized || g_held) {
+        t_holds_lock = false;
+        pthread_mutex_unlock(&g_lock);
+        return -1;
+    }
+
+    g_held = true;
+    stf_disable_locked();
+    flush_locked();
+    return 0;
+}
+
+int deimos_rx_release(void)
+{
+    if (!t_holds_lock || !g_held)
+        return -1;
+
+    stf_enable_locked();
+    flush_locked();
+    g_held = false;
+    t_holds_lock = false;
+    pthread_mutex_unlock(&g_lock);
+    return 0;
+}
+
+/* Cached-config notes.  Callers that already hold the transaction use the
+ * _locked forms directly; the public entry points take the lock otherwise. */
+
+static void note_channel_locked(int channel)
+{
+    g_radio_cfg.channel = channel;
+}
+
+static void note_gain_locked(double rx_gain_db)
+{
+    g_radio_cfg.rx_gain_db = rx_gain_db;
+}
+
+static void note_agc_locked(deimos_agc_mode_t mode)
+{
+    g_radio_cfg.agc_mode = mode;
+}
+
+static void note_bandwidth_locked(int bandwidth_mhz)
+{
+    g_radio_cfg.bandwidth_mhz = bandwidth_mhz;
+}
+
+int deimos_rx_note_channel(int channel)
+{
+    bool locked = txn_lock();
+    if (!g_initialized) {
+        txn_unlock(locked);
+        return -1;
+    }
+    note_channel_locked(channel);
+    txn_unlock(locked);
+    return 0;
+}
+
+int deimos_rx_note_gain(double rx_gain_db)
+{
+    bool locked = txn_lock();
+    if (!g_initialized) {
+        txn_unlock(locked);
+        return -1;
+    }
+    note_gain_locked(rx_gain_db);
+    txn_unlock(locked);
+    return 0;
+}
+
+int deimos_rx_note_agc(deimos_agc_mode_t mode)
+{
+    bool locked = txn_lock();
+    if (!g_initialized) {
+        txn_unlock(locked);
+        return -1;
+    }
+    note_agc_locked(mode);
+    txn_unlock(locked);
+    return 0;
+}
+
+int deimos_rx_note_bandwidth(int bandwidth_mhz)
+{
+    bool locked = txn_lock();
+    if (!g_initialized) {
+        txn_unlock(locked);
+        return -1;
+    }
+    note_bandwidth_locked(bandwidth_mhz);
+    txn_unlock(locked);
+    return 0;
+}
+
+/* --------------------------------------------------------------------------
+ * Hot reconfigure (standalone deimos tools)
+ *
+ * Each transaction disables STF, retunes, updates the cached config, then
+ * re-enables STF.  The shesha daemon owns its LOs and does not call these
+ * during a fabric retune.
  * -------------------------------------------------------------------------- */
 
 int deimos_rx_set_freq(uint64_t freq_hz)
 {
-    if (!g_initialized) return -1;
+    if (deimos_rx_hold() != 0)
+        return -1;
 
-    uint64_t freq_mhz = freq_hz / 1000000;
-    int channel;
-    if (freq_mhz >= 2412 && freq_mhz <= 2484)
-        channel = (int)(freq_mhz - 2412) / 5 + 1;
-    else
-        channel = (int)(freq_mhz - 5000) / 5;
-    g_radio_cfg.channel = channel;
-
-    hal_reg_write(REG_DEIMOS_STF_ENABLE, 0);
-    if (g_radio_cfg.configure_tx)
-        hal_ad9361_set_tx_lo(freq_hz);
-    hal_ad9361_set_rx_lo(freq_hz);
+    int rc = 0;
+    if (g_radio_cfg.configure_tx && hal_ad9361_set_tx_lo(freq_hz) != 0)
+        rc = -1;
+    if (hal_ad9361_set_rx_lo(freq_hz) != 0)
+        rc = -1;
     usleep(DEIMOS_RETUNE_SETTLE_US);
 
-    hal_reg_write(REG_DEIMOS_STF_ENABLE, 1);
-    usleep(DEIMOS_REG_SETTLE_US);
-    deimos_rx_flush();
-    return 0;
+    if (rc == 0)
+        note_channel_locked(deimos_rx_freq_to_channel(freq_hz));
+    if (deimos_rx_release() != 0 && rc == 0)
+        rc = -1;
+    return rc;
 }
 
 int deimos_rx_set_channel(int channel)
 {
-    if (!g_initialized) return -1;
+    if (deimos_rx_hold() != 0)
+        return -1;
 
-    g_radio_cfg.channel = channel;
     uint64_t freq = deimos_rx_channel_to_freq(channel);
-
-    /* Disable STF during retune — LO change causes ADC garbage */
-    hal_reg_write(REG_DEIMOS_STF_ENABLE, 0);
-    if (g_radio_cfg.configure_tx)
-        hal_ad9361_set_tx_lo(freq);
-    hal_ad9361_set_rx_lo(freq);
+    int rc = 0;
+    if (g_radio_cfg.configure_tx && hal_ad9361_set_tx_lo(freq) != 0)
+        rc = -1;
+    if (hal_ad9361_set_rx_lo(freq) != 0)
+        rc = -1;
     usleep(DEIMOS_RETUNE_SETTLE_US);
 
-    hal_reg_write(REG_DEIMOS_STF_ENABLE, 1);
-    usleep(DEIMOS_REG_SETTLE_US);
-    deimos_rx_flush();
-    return 0;
+    if (rc == 0)
+        note_channel_locked(channel);
+    if (deimos_rx_release() != 0 && rc == 0)
+        rc = -1;
+    return rc;
 }
 
 int deimos_rx_set_bandwidth(int bandwidth_mhz)
 {
-    if (!g_initialized) return -1;
+    if (deimos_rx_hold() != 0)
+        return -1;
 
     uint64_t bw_hz = bandwidth_mhz > 0
         ? (uint64_t)bandwidth_mhz * 1000000ULL
         : 28000000ULL;
-    g_radio_cfg.bandwidth_mhz = bandwidth_mhz;
-
-    hal_reg_write(REG_DEIMOS_STF_ENABLE, 0);
-    if (g_radio_cfg.configure_tx)
-        hal_ad9361_set_tx_bandwidth(bw_hz);
-    hal_ad9361_set_rx_bandwidth(bw_hz);
+    int rc = 0;
+    if (g_radio_cfg.configure_tx && hal_ad9361_set_tx_bandwidth(bw_hz) != 0)
+        rc = -1;
+    if (hal_ad9361_set_rx_bandwidth(bw_hz) != 0)
+        rc = -1;
     usleep(DEIMOS_RETUNE_SETTLE_US);
-    hal_reg_write(REG_DEIMOS_STF_ENABLE, 1);
-    usleep(DEIMOS_REG_SETTLE_US);
-    deimos_rx_flush();
-    return 0;
+
+    if (rc == 0)
+        note_bandwidth_locked(bandwidth_mhz);
+    if (deimos_rx_release() != 0 && rc == 0)
+        rc = -1;
+    return rc;
 }
 
 int deimos_rx_set_gain(double rx_gain_db)
 {
-    if (!g_initialized) return -1;
+    if (deimos_rx_hold() != 0)
+        return -1;
 
-    g_radio_cfg.rx_gain_db = rx_gain_db;
-    hal_ad9361_set_rx_gain(rx_gain_db);
-
-    /* Large gain steps saturate ADC → corrupt accumulators.
-     * Full reset with 12ms hold covers watchdog drain. */
-    hal_reg_write(REG_DEIMOS_STF_ENABLE, 0);
-    usleep(DEIMOS_WATCHDOG_HOLD_US);
-    hal_reg_write(REG_DEIMOS_STF_ENABLE, 1);
-    usleep(DEIMOS_REG_SETTLE_US);
-    deimos_rx_flush();
-    return 0;
+    int rc = hal_ad9361_set_rx_gain(rx_gain_db);
+    if (rc == 0)
+        note_gain_locked(rx_gain_db);
+    if (deimos_rx_release() != 0 && rc == 0)
+        rc = -1;
+    return rc;
 }
 
 int deimos_rx_set_agc_mode(deimos_agc_mode_t mode)
 {
-    if (!g_initialized) return -1;
+    if (deimos_rx_hold() != 0)
+        return -1;
 
+    int rc = 0;
     switch (mode) {
     case DEIMOS_AGC_FAST_ATTACK:
-        hal_ad9361_set_rx_gain_mode("fast_attack");
+        rc = hal_ad9361_set_rx_gain_mode("fast_attack");
         break;
     case DEIMOS_AGC_SLOW_ATTACK:
-        hal_ad9361_set_rx_gain_mode("slow_attack");
+        rc = hal_ad9361_set_rx_gain_mode("slow_attack");
         break;
     case DEIMOS_AGC_MANUAL:
     default:
-        hal_ad9361_set_rx_gain_mode("manual");
-        hal_ad9361_set_rx_gain(g_radio_cfg.rx_gain_db);
+        rc = hal_ad9361_set_rx_gain_mode("manual");
+        if (rc == 0)
+            rc = hal_ad9361_set_rx_gain(g_radio_cfg.rx_gain_db);
         break;
     }
-    g_radio_cfg.agc_mode = mode;
-
-    /* Gain mode changes can cause ADC saturation transients.
-     * Reset STF with 12ms hold covers watchdog drain. */
-    hal_reg_write(REG_DEIMOS_STF_ENABLE, 0);
-    usleep(DEIMOS_WATCHDOG_HOLD_US);
-    hal_reg_write(REG_DEIMOS_STF_ENABLE, 1);
-    usleep(DEIMOS_REG_SETTLE_US);
-    deimos_rx_flush();
-    return 0;
+    if (rc == 0)
+        note_agc_locked(mode);
+    if (deimos_rx_release() != 0 && rc == 0)
+        rc = -1;
+    return rc;
 }
 
 int deimos_rx_set_threshold(int stf_threshold)
 {
-    if (!g_initialized) return -1;
+    bool locked = txn_lock();
+    if (!g_initialized) {
+        txn_unlock(locked);
+        return -1;
+    }
 
     g_pipeline_cfg.stf_threshold = stf_threshold;
     hal_reg_write(REG_DEIMOS_STF_THRESH, stf_threshold);
+    txn_unlock(locked);
     return 0;
 }
 
 void deimos_rx_flush(void)
 {
-    hal_reg_write(REG_TAG_FIFO_CONTROL, TAG_CTRL_FLUSH);
-    usleep(DEIMOS_REG_SETTLE_US);
-    hal_reg_write(REG_TAG_FIFO_CONTROL, 0);
+    bool locked = txn_lock();
+    flush_locked();
+    txn_unlock(locked);
 }
 
 /* --------------------------------------------------------------------------
@@ -379,11 +570,17 @@ void deimos_rx_flush(void)
 
 int deimos_rx_poll(deimos_rx_frame_t *frame)
 {
-    if (!g_initialized) return -1;
+    bool locked = txn_lock();
+    if (!g_initialized) {
+        txn_unlock(locked);
+        return -1;
+    }
 
     uint32_t status = hal_reg_read(REG_TAG_FIFO_STATUS);
-    if (status & TAG_STATUS_EMPTY)
+    if (status & TAG_STATUS_EMPTY) {
+        txn_unlock(locked);
         return 0;  /* no frame available */
+    }
 
     /* Read TAG_LO (peek — no pop) */
     uint32_t lo = hal_reg_read(REG_TAG_FIFO_TAG_LO);
@@ -418,6 +615,7 @@ int deimos_rx_poll(deimos_rx_frame_t *frame)
         frame->psdu_len = 0;
     }
 
+    txn_unlock(locked);
     return 1;  /* frame available */
 }
 

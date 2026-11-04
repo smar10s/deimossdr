@@ -12,6 +12,8 @@ option(DEIMOS_BUILD_TOOLS "Build on-device ARM tools" ON)
 
 add_compile_options(-Wall -Wextra -Werror)
 
+find_package(Threads REQUIRED)
+
 enable_testing()
 
 set(LIB80211_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -46,7 +48,7 @@ add_library(deimos_hal STATIC
     src/deimos_rx.c
 )
 target_include_directories(deimos_hal PUBLIC src)
-target_link_libraries(deimos_hal PUBLIC styx_hal lib80211)
+target_link_libraries(deimos_hal PUBLIC styx_hal lib80211 Threads::Threads)
 
 # Deimos tool scaffolding — JSON waveform parsing, DDR quantization, frame builders
 add_library(deimos_tool STATIC

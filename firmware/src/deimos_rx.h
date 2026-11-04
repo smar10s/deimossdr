@@ -191,8 +191,41 @@ int deimos_rx_start(const deimos_radio_config_t *radio,
 void deimos_rx_cleanup(void);
 
 /* ============================================================================
+ * Serialized radio transaction
+ *
+ * hold() disables STF, waits out the watchdog, and flushes the tag FIFO.
+ * release() re-enables STF, settles, flushes, and unlocks.  The caller
+ * performs hardware writes between the two calls.
+ *
+ * The poll thread blocks for the duration of the transaction, so a frame
+ * read never spans an STF disable or a FIFO flush.  A retune is a few
+ * milliseconds, well below the poll loop's frame budget.
+ *
+ * The same thread must call hold() and release().  hold() returns -1 if
+ * the caller already holds the transaction; release() returns -1 when the
+ * caller does not hold it.  While held, the note_* functions may be called
+ * from the same thread without locking again.
+ * ============================================================================ */
+
+int deimos_rx_hold(void);
+int deimos_rx_release(void);
+
+/*
+ * Update the cached radio configuration without touching AD9361 or STF.
+ * An external owner (the shesha daemon) writes the LOs itself, then records
+ * the committed values here.  These are safe to call while holding.
+ */
+int deimos_rx_note_channel(int channel);
+int deimos_rx_note_gain(double rx_gain_db);
+int deimos_rx_note_agc(deimos_agc_mode_t mode);
+int deimos_rx_note_bandwidth(int bandwidth_mhz);
+
+/* ============================================================================
  * Hot reconfigure (no full teardown)
- * Each includes STF disable → change → re-enable → flush.
+ *
+ * Each includes STF disable → change → re-enable → flush.  These are for
+ * standalone deimos tools: the shesha daemon owns its own LOs and does not
+ * use these for a fabric retune.
  * ============================================================================ */
 
 int  deimos_rx_set_freq(uint64_t freq_hz);
@@ -227,6 +260,7 @@ uint32_t deimos_rx_drop_count(void);
 
 int      deimos_rx_rate_mbps(uint8_t rate_code);
 uint64_t deimos_rx_channel_to_freq(int channel);
+int      deimos_rx_freq_to_channel(uint64_t freq_hz);
 
 /* ============================================================================
  * Frame decode mode
