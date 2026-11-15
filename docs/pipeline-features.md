@@ -22,10 +22,10 @@ Register map: `docs/registers.md`
 - **STF internal self-ack** — `pipeline_ack_latch` set at detection time
   inside stf_detect (no external BD routing dependency). Eliminates the
   hardware-only failure where BD self-loop timing prevented rearm.
-- **HIL 1-in-5 gating** — hil_ctrl gates `test_valid` to 1-per-5 clocks,
-  matching live ADC rate. All downstream modules (correlator, windowed-max,
-  stf_end timing) operate identically in HIL and live mode. Eliminates
-  the class of bugs where 1-per-clock injection broke multi-stage pipelines.
+- **HIL ADC-strobe pacing** — hil_ctrl advances playback on the same
+  `adc_valid` strobe as live data. At 20 MSPS the pipeline sees the same
+  1-in-5 cadence in HIL and live mode. Playback also follows a runtime
+  rate change, and a FIFO fill gate keeps DDR latency from starving it.
 - **Runtime STF threshold** — configurable sensitivity via
   `deimos_regs_axi` STF_THRESH (shift=0-7, 0=standard, 1=2x, 2=4x sensitive).
 - **STF enable gate** — firmware-controlled datapath enable via

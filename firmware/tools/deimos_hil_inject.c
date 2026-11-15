@@ -86,7 +86,8 @@
  * HIL inject + snap capture
  * -------------------------------------------------------------------------- */
 
-static int hil_inject_and_capture(int n_samples, uint32_t snap_buf[SNAP_DEPTH],
+static int hil_inject_and_capture(int n_samples, long long rate_hz,
+                                   uint32_t snap_buf[SNAP_DEPTH],
                                    int cfo_thresh, int ltf_skip)
 {
     /* 1. ARM PIPELINE for HIL mode.
@@ -101,10 +102,15 @@ static int hil_inject_and_capture(int n_samples, uint32_t snap_buf[SNAP_DEPTH],
         .cfo_thresh = cfo_thresh,
     };
     deimos_pipeline_arm(&pipe_cfg);
+    if (styx_wait_adc_strobes(2, 100) != 0) {
+        fprintf(stderr, "ERROR: test mode did not latch on an ADC strobe\n");
+        return -1;
+    }
 
     /* 2. Configure playback: base address + sample count */
     hal_reg_write(REG_HIL_DDR_BASE, HIL_DDR_BASE);
     hal_reg_write(REG_HIL_PLAY_COUNT, (uint32_t)n_samples);
+    hal_reg_write(REG_HIL_CTRL_UNDERRUN, 1);
 
     /* 2b. Warm-up pass: run one full decode cycle to initialize pipeline
      *     hardware state (Viterbi path memory, distributed RAM, etc).
@@ -119,6 +125,11 @@ static int hil_inject_and_capture(int n_samples, uint32_t snap_buf[SNAP_DEPTH],
     /* 2c. Re-arm pipeline after warm-up (full STF reset + flush).
      *     This clears any accumulated state from the warm-up pass. */
     deimos_pipeline_arm(&pipe_cfg);
+    if (styx_wait_adc_strobes(2, 100) != 0) {
+        fprintf(stderr, "ERROR: test mode did not latch on an ADC strobe\n");
+        return -1;
+    }
+    hal_reg_write(REG_HIL_CTRL_UNDERRUN, 1);
 
     /* 3. Arm snap probe.
      *    Write 0 first to force out of any stale captured state,
@@ -137,8 +148,10 @@ static int hil_inject_and_capture(int n_samples, uint32_t snap_buf[SNAP_DEPTH],
     /* 4. Start real pass: enable STF + trigger HIL atomically. */
     deimos_stf_gate(DEIMOS_TRIGGER_HIL);
 
-    /* 5. Wait for snap capture complete (ext_trig fires, then 512 post-trigger samples) */
-    int timeout_ms = 500;
+    /* 5. Wait for snap capture complete (ext_trig fires, then 512 post-trigger samples). */
+    uint64_t snap_us = ((uint64_t)512 * 1000000ULL +
+                        (uint64_t)rate_hz - 1ULL) / (uint64_t)rate_hz;
+    int timeout_ms = (int)((snap_us + 999ULL) / 1000ULL) + 50;
     while (timeout_ms > 0) {
         snap_status = hal_reg_read(REG_SNAP_STATUS);
         if (snap_status & 0x01)  /* captured */
@@ -155,14 +168,32 @@ static int hil_inject_and_capture(int n_samples, uint32_t snap_buf[SNAP_DEPTH],
         return -1;
     }
 
-    /* 6. Ensure playback is complete before reading (avoids bus contention) */
-    timeout_ms = 100;
+    /* 6. Ensure playback is complete before reading (avoids bus contention). */
+    uint64_t play_us = ((uint64_t)n_samples * 1000000ULL +
+                        (uint64_t)rate_hz - 1ULL) / (uint64_t)rate_hz;
+    timeout_ms = (int)((play_us + 999ULL) / 1000ULL) + 50;
+    uint32_t hil_status = 0;
     while (timeout_ms > 0) {
-        uint32_t hil_status = hal_reg_read(REG_HIL_STATUS);
+        hil_status = hal_reg_read(REG_HIL_STATUS);
         if (hil_status & 0x02)  /* playback_done */
             break;
         usleep(1000);
         timeout_ms--;
+    }
+    if (!(hil_status & 0x02)) {
+        fprintf(stderr, "ERROR: playback done timeout\n");
+        hal_reg_write(REG_HIL_CONTROL, 0);
+        return -1;
+    }
+
+    uint32_t underrun = hal_reg_read(REG_HIL_CTRL_UNDERRUN);
+    uint32_t played = hal_reg_read(REG_HIL_PLAY_PTR);
+    if (underrun != 0 || played != (uint32_t)n_samples) {
+        fprintf(stderr,
+                "ERROR: HIL playback underrun=%u, played=%u/%d\n",
+                underrun, played, n_samples);
+        hal_reg_write(REG_HIL_CONTROL, 0);
+        return -1;
     }
 
     /* 7. Read snap buffer (1024 entries) */
@@ -297,6 +328,9 @@ static void usage(const char *prog) {
         "\n"
         "  <waveform>   Path to JSON file, or rate shorthand (e.g. 6mbps)\n"
         "\n"
+        "  Requires a streaming ADC. The rate is read from the AD9361;\n"
+        "  use deimos_adc_preflight to set it.\n"
+        "\n"
         "Options:\n"
         "  -c <hz>      Apply CFO (frequency offset in Hz) before injection\n"
         "  -t <val>     CFO threshold (default: 64 for captures with stf_offset,\n"
@@ -373,13 +407,6 @@ int main(int argc, char *argv[])
     if (deimos_tool_load_waveform(waveform_path, &re, &im, &n_samples, &stf_offset, NULL) != 0)
         return 1;
 
-    if (!quiet) {
-        fprintf(stderr, "  Samples: %d (%.2f ms at 20 MSPS)\n",
-                n_samples, n_samples / 20000.0);
-        if (stf_offset >= 0)
-            fprintf(stderr, "  stf_offset: %d (from JSON metadata)\n", stf_offset);
-    }
-
     if (n_samples > HIL_MAX_SAMPLES) {
         fprintf(stderr, "ERROR: Waveform too large (%d > %d samples)\n",
                 n_samples, HIL_MAX_SAMPLES);
@@ -387,9 +414,40 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    /* Apply CFO if requested (rotate IQ by cfo_hz at 20 MSPS) */
+    if (n_samples < 512) {
+        fprintf(stderr, "ERROR: Waveform too short (%d < 512 samples)\n",
+                n_samples);
+        free(re); free(im);
+        return 1;
+    }
+
+    /* Initialize HAL */
+    if (hal_init() != 0) {
+        fprintf(stderr, "ERROR: hal_init failed\n");
+        free(re); free(im);
+        return 1;
+    }
+
+    /* The ADC is the HIL timebase. Read its rate and prove the strobe
+     * is advancing before we touch playback. */
+    long long rate_hz = styx_wait_adc_stream(100);
+    if (rate_hz <= 0) {
+        free(re); free(im);
+        hal_cleanup();
+        return 1;
+    }
+
+    if (!quiet) {
+        fprintf(stderr, "  Samples: %d (%.2f ms at %.2f MSPS)\n",
+                n_samples, (double)n_samples * 1000.0 / (double)rate_hz,
+                (double)rate_hz / 1e6);
+        if (stf_offset >= 0)
+            fprintf(stderr, "  stf_offset: %d (from JSON metadata)\n", stf_offset);
+    }
+
+    /* Apply CFO if requested (rotate IQ at the configured rate) */
     if (cfo_hz != 0.0) {
-        double sample_rate = 20e6;
+        double sample_rate = (double)rate_hz;
         double phase_inc = 2.0 * M_PI * cfo_hz / sample_rate;
         if (!quiet)
             fprintf(stderr, "  Applying CFO: %.1f Hz (%.6f rad/sample)\n",
@@ -403,13 +461,6 @@ int main(int argc, char *argv[])
             re[i] = r_new;
             im[i] = i_new;
         }
-    }
-
-    /* Initialize HAL */
-    if (hal_init() != 0) {
-        fprintf(stderr, "ERROR: hal_init failed\n");
-        free(re); free(im);
-        return 1;
     }
 
     /* Get DDR TX buffer pointer and offset to HIL region */
@@ -458,7 +509,7 @@ int main(int argc, char *argv[])
                 n_samples, thresh, ltf_sk);
 
     uint32_t snap_buf[SNAP_DEPTH];
-    if (hil_inject_and_capture(n_samples, snap_buf, thresh, ltf_sk) != 0) {
+    if (hil_inject_and_capture(n_samples, rate_hz, snap_buf, thresh, ltf_sk) != 0) {
         hal_cleanup();
         return 1;
     }

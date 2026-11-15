@@ -10,6 +10,7 @@
 #       -rtl_dir fpga/rtl \
 #       -adi_hdl_dir platform/styx/fpga/extern/adi-hdl \
 #       -output_dir build/fpga \
+#       -project_id 0x57494649 \
 #       [-place_strategy Explore] \
 #       [-opt_directive ExploreArea] \
 #       [-ooc_modules "mod1 mod2 ..."] \
@@ -29,6 +30,7 @@ set project_dir    [file normalize [dict get $opts project_dir]]
 set rtl_dir        [file normalize [dict get $opts rtl_dir]]
 set adi_hdl_dir    [file normalize [dict get $opts adi_hdl_dir]]
 set output_dir     [file normalize [dict get $opts output_dir]]
+set project_id     [dict get $opts project_id]
 set place_strategy [dict get $opts place_strategy]
 set opt_directive  [dict get $opts opt_directive]
 set ooc_modules    [dict get $opts ooc_modules]
@@ -53,7 +55,7 @@ file mkdir $output_dir
 
 set deimos_fp_styx_rtl_dir $styx_rtl_dir
 set deimos_fp_rtl_dir $rtl_dir
-set fingerprint [styx::fingerprint [list $deimos_fp_styx_rtl_dir $deimos_fp_rtl_dir] $project_dir]
+set fingerprint [styx::fingerprint [list $deimos_fp_styx_rtl_dir $deimos_fp_rtl_dir] $project_dir $project_id]
 
 # ============================================================================
 # Phase 1: Project creation
@@ -78,7 +80,7 @@ if {![dict get $opts skip_project]} {
 
 puts "========== PHASE 2: BUILD FINGERPRINT =========="
 puts "Fingerprint: $fingerprint"
-styx::set_build_id $fingerprint -project_id 0x57494649
+styx::set_build_id $fingerprint -project_id $project_id
 
 # ============================================================================
 # Phase 3: OOC synthesis (deimos: AreaOptimized_high, cset_opt=4)
@@ -165,6 +167,7 @@ if {[file exists $bit_file]} {
 
 set build_info [dict create \
     fingerprint $fingerprint \
+    project_id $project_id \
     bitstream_sha256 $bsha \
     wns [dict get $timing wns] \
     whs [dict get $timing whs] \

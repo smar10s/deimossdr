@@ -216,9 +216,9 @@ the verdict, not the capture's OTA tag log.
 4. **Include CFO in test cases.** Zero-CFO hides bugs that only manifest
    when phase accumulates over many symbols. Use 100kHz+ CFO for stress.
 
-5. **Count samples, not clocks.** The pipeline runs at 1 IQ sample per 5
-   clocks. Buffer positions, frame offsets, and symbol boundaries are all
-   in sample-space. Clock counts are misleading.
+5. **Count samples, not clocks.** The pipeline consumes one IQ sample per
+   ADC strobe (1-in-5 at 20 MSPS). Buffer positions, frame offsets, and
+   symbol boundaries are all in sample-space. Clock counts are misleading.
 
 ## Debug Snap Register Reference
 

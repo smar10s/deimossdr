@@ -10,6 +10,12 @@ add_executable(deimos_hil_inject deimos_hil_inject.c)
 target_link_libraries(deimos_hil_inject ${TOOL_LIBS})
 target_link_options(deimos_hil_inject PRIVATE -static)
 
+# Shared preflight: the one place that may set the ADC rate.
+add_executable(deimos_adc_preflight
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../platform/styx/firmware/tools/adc_preflight.c)
+target_link_libraries(deimos_adc_preflight ${TOOL_LIBS})
+target_link_options(deimos_adc_preflight PRIVATE -static)
+
 add_executable(deimos_fabric_loopback deimos_fabric_loopback.c)
 target_link_libraries(deimos_fabric_loopback ${TOOL_LIBS})
 target_link_options(deimos_fabric_loopback PRIVATE -static)

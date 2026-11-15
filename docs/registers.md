@@ -79,8 +79,9 @@ Instance `hil_ctrl_0`, defined in `platform/styx/fpga/rtl/hil_ctrl.v`.
 | `0x08` | `0x7C500008` | `DDR_BASE` | RW | Physical DDR base of test waveform |
 | `0x0C` | `0x7C50000C` | `PLAY_COUNT` | RW | Number of IQ samples to play back |
 | `0x10` | `0x7C500010` | `PLAY_PTR` | RO | Current playback position (sample index) |
-| `0x14`-`0x38` | `0x7C500014`-`0x7C500038` | `(reserved)` | — | Reserved for downstream extension |
-| `0x3C` | `0x7C50003C` | `ADC_CNT` | RO | [31:0]=adc_valid pulse counter (live mode only) |
+| `0x14` | `0x7C500014` | `UNDERRUN` | RW | [31:0]=sticky underrun count (write 1 to clear) |
+| `0x18`-`0x38` | `0x7C500018`-`0x7C500038` | `(reserved)` | — | Reserved for downstream extension |
+| `0x3C` | `0x7C50003C` | `ADC_CNT` | RO | [31:0]=adc_valid pulse counter (live and test mode) |
 
 ## Tag FIFO + PSDU BRAM readback — `0x7C510000`
 

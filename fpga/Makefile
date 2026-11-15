@@ -50,6 +50,9 @@ REMOTE_LD_PATH  ?=
 # See D21 for history.
 PLACE_STRATEGY  ?= ExtraPostPlacementOpt
 
+# Project magic mixed into the fingerprint ("WIFI").
+PROJECT_ID      ?= 0x57494649
+
 # opt_design directive applied during implementation (styx::implement
 # -opt_directive). ExploreArea is required to fit at ~96% pre-opt LUTs
 # (~200 LUT headroom); the styx default (ExploreWithRemap) does not fit.
@@ -87,6 +90,7 @@ BUILD_TCL_ARGS  = -project_dir $(PROJECT_DIR) \
                   -rtl_dir $(RTL_DIR) \
                   -adi_hdl_dir $(ADI_HDL_DIR) \
                   -output_dir $(OUTPUT_DIR) \
+                  -project_id $(PROJECT_ID) \
                   -place_strategy $(PLACE_STRATEGY) \
                   -opt_directive $(OPT_DIRECTIVE)
 
