@@ -62,6 +62,9 @@ if ! pluto_ssh "which deimos_hil_inject" >/dev/null 2>&1; then
     exit 2
 fi
 
+# HIL follows the ADC strobe, so pin the rate before any trial.
+adc_preflight 20000000
+
 # Ensure snap mode 0 (state/FCS decode result) — other modes produce
 # data that the parse_fcs_ok function cannot interpret correctly.
 pluto_ssh "devmem 0x7C50001C 32 0" 2>/dev/null

@@ -28,6 +28,9 @@
 
 #define DEIMOS_RX_MAX_PSDU  1500
 
+/* Deimos is a 20 MSPS design. The fabric timing and HIL cadence assume it. */
+#define DEIMOS_SAMPLE_RATE_HZ 20000000ULL
+
 /* ============================================================================
  * Pipeline mode
  * ============================================================================ */

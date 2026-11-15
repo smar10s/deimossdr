@@ -82,6 +82,9 @@ if ! pluto_ssh "which deimos_hil_inject" >/dev/null 2>&1; then
     exit 2
 fi
 
+# HIL follows the ADC strobe, so pin the rate before any trial.
+adc_preflight 20000000
+
 # ---- Inject and check ----
 # inject_trial <waveform> [extra_args...]
 # Returns 0 on FCS pass, 1 on FCS fail, 2 on error

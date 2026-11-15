@@ -195,6 +195,8 @@ test_deimos_regs_axi:
 		VERILOG_SOURCES="$(RTL)/deimos_regs_axi.v" \
 		COCOTB_TEST_MODULES=test_deimos_regs_axi
 
+# test_hil_ctrl.py and axi3_mocks.py are symlinks into platform/styx, so
+# the pinned RTL and its tests stay one source and cannot drift.
 .PHONY: test_hil_ctrl
 test_hil_ctrl:
 	$(MAKE) sim SIM_BUILD=sim_build_hil_ctrl \

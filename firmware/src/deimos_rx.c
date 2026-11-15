@@ -171,7 +171,7 @@ int deimos_radio_init(const deimos_radio_config_t *cfg)
         : 28000000ULL;
 
     /* Sample rate first — changes clock tree */
-    hal_ad9361_set_sample_rate(20000000ULL);
+    hal_ad9361_set_sample_rate(DEIMOS_SAMPLE_RATE_HZ);
 
     /* TX LO before RX LO — keeps both PLLs tracking */
     if (cfg->configure_tx) {

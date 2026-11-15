@@ -90,6 +90,8 @@ static int hil_inject_and_capture(int n_samples, long long rate_hz,
                                    uint32_t snap_buf[SNAP_DEPTH],
                                    int cfo_thresh, int ltf_skip)
 {
+    int rc = -1;
+
     /* 1. ARM PIPELINE for HIL mode.
      *    Sets test_mode, disables STF (12ms drain), writes stf_threshold,
      *    flushes tags. (stf_skip/ltf_skip/cfo_thresh are no longer wired to
@@ -104,7 +106,7 @@ static int hil_inject_and_capture(int n_samples, long long rate_hz,
     deimos_pipeline_arm(&pipe_cfg);
     if (styx_wait_adc_strobes(2, 100) != 0) {
         fprintf(stderr, "ERROR: test mode did not latch on an ADC strobe\n");
-        return -1;
+        goto fail;
     }
 
     /* 2. Configure playback: base address + sample count */
@@ -127,7 +129,7 @@ static int hil_inject_and_capture(int n_samples, long long rate_hz,
     deimos_pipeline_arm(&pipe_cfg);
     if (styx_wait_adc_strobes(2, 100) != 0) {
         fprintf(stderr, "ERROR: test mode did not latch on an ADC strobe\n");
-        return -1;
+        goto fail;
     }
     hal_reg_write(REG_HIL_CTRL_UNDERRUN, 1);
 
@@ -148,8 +150,8 @@ static int hil_inject_and_capture(int n_samples, long long rate_hz,
     /* 4. Start real pass: enable STF + trigger HIL atomically. */
     deimos_stf_gate(DEIMOS_TRIGGER_HIL);
 
-    /* 5. Wait for snap capture complete (ext_trig fires, then 512 post-trigger samples). */
-    uint64_t snap_us = ((uint64_t)512 * 1000000ULL +
+    /* 5. Wait for snap capture complete (ext_trig fires, then POST_DEPTH samples). */
+    uint64_t snap_us = ((uint64_t)SNAP_POST_DEPTH * 1000000ULL +
                         (uint64_t)rate_hz - 1ULL) / (uint64_t)rate_hz;
     int timeout_ms = (int)((snap_us + 999ULL) / 1000ULL) + 50;
     while (timeout_ms > 0) {
@@ -165,7 +167,7 @@ static int hil_inject_and_capture(int n_samples, long long rate_hz,
         uint32_t hil_status = hal_reg_read(REG_HIL_STATUS);
         uint32_t hil_ptr = hal_reg_read(REG_HIL_PLAY_PTR);
         fprintf(stderr, "  hil_status=0x%08x, play_ptr=%u\n", hil_status, hil_ptr);
-        return -1;
+        goto fail;
     }
 
     /* 6. Ensure playback is complete before reading (avoids bus contention). */
@@ -182,8 +184,7 @@ static int hil_inject_and_capture(int n_samples, long long rate_hz,
     }
     if (!(hil_status & 0x02)) {
         fprintf(stderr, "ERROR: playback done timeout\n");
-        hal_reg_write(REG_HIL_CONTROL, 0);
-        return -1;
+        goto fail;
     }
 
     uint32_t underrun = hal_reg_read(REG_HIL_CTRL_UNDERRUN);
@@ -192,8 +193,7 @@ static int hil_inject_and_capture(int n_samples, long long rate_hz,
         fprintf(stderr,
                 "ERROR: HIL playback underrun=%u, played=%u/%d\n",
                 underrun, played, n_samples);
-        hal_reg_write(REG_HIL_CONTROL, 0);
-        return -1;
+        goto fail;
     }
 
     /* 7. Read snap buffer (1024 entries) */
@@ -203,10 +203,12 @@ static int hil_inject_and_capture(int n_samples, long long rate_hz,
         snap_buf[i] = hal_reg_read(REG_SNAP_RD_DATA);
     }
 
-    /* 8. Disable test mode */
-    hal_reg_write(REG_HIL_CONTROL, 0);
+    rc = 0;
 
-    return 0;
+fail:
+    /* Leave the mux on the live ADC path, even on error. */
+    hal_reg_write(REG_HIL_CONTROL, 0);
+    return rc;
 }
 
 /* --------------------------------------------------------------------------
@@ -414,9 +416,9 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    if (n_samples < 512) {
-        fprintf(stderr, "ERROR: Waveform too short (%d < 512 samples)\n",
-                n_samples);
+    if (n_samples < SNAP_POST_DEPTH) {
+        fprintf(stderr, "ERROR: Waveform too short (%d < %d samples)\n",
+                n_samples, SNAP_POST_DEPTH);
         free(re); free(im);
         return 1;
     }
@@ -428,10 +430,17 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    /* The ADC is the HIL timebase. Read its rate and prove the strobe
-     * is advancing before we touch playback. */
+    /* Start from a known mux state, then prove the ADC is streaming. */
+    hal_reg_write(REG_HIL_CONTROL, 0);
     long long rate_hz = styx_wait_adc_stream(100);
     if (rate_hz <= 0) {
+        free(re); free(im);
+        hal_cleanup();
+        return 1;
+    }
+    if (llabs(rate_hz - (long long)DEIMOS_SAMPLE_RATE_HZ) > 100) {
+        fprintf(stderr, "ERROR: ADC rate %lld Hz, expected %llu Hz\n",
+                rate_hz, (unsigned long long)DEIMOS_SAMPLE_RATE_HZ);
         free(re); free(im);
         hal_cleanup();
         return 1;

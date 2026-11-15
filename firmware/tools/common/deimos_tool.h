@@ -47,6 +47,7 @@
 #define SNAP_CTRL_SWTRIG    (1 << 1)
 #define SNAP_CTRL_CIRCULAR  (1 << 2)
 #define SNAP_DEPTH          1024
+#define SNAP_POST_DEPTH     512
 
 /* Samples of silence (at 20 MSPS = 100 us) padded before/after a TX frame.
  * Gives the STF correlator fill time before the first real sample. */

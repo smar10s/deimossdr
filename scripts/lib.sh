@@ -33,6 +33,17 @@ preflight() {
     pluto_ssh "true" 2>/dev/null || { echo "ERROR: Cannot reach Pluto at $PLUTO_IP" >&2; exit 2; }
 }
 
+# adc_preflight <rate_hz> — set and verify the ADC strobe before HIL.
+# Deimos is a 20 MSPS design; the HIL gate must not inherit ambient state.
+adc_preflight() {
+    local rate_hz="${1:-20000000}" out
+    out=$(pluto_ssh "deimos_adc_preflight -r $rate_hz" 2>&1) || {
+        echo "ERROR: ADC preflight failed; need $rate_hz Hz streaming" >&2
+        [ -n "$out" ] && echo "$out" >&2
+        exit 2
+    }
+}
+
 # retry_ssh <attempts> <remote cmd...> — retries on SSH-level failure only.
 # Prints stdout on first success. Returns 0 on success, 1 if all failed.
 retry_ssh() {
