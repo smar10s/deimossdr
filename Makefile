@@ -194,8 +194,8 @@ deploy: ## Deploy firmware binaries + golden vectors to PlutoSDR via SCP
 		echo "ERROR: No firmware build. Run 'make firmware' first."; exit 1; \
 	fi
 	@echo "  Deploying deimos tools..."
-	@for bin in deimos_hil_inject deimos_fabric_loopback deimos_adc_capture \
-	            deimos_burst_loopback deimos_rx_dump; do \
+	@for bin in deimos_hil_inject deimos_adc_preflight deimos_fabric_loopback \
+	            deimos_adc_capture deimos_burst_loopback deimos_rx_dump; do \
 		if [ -f "$(FW_BUILD_DIR)/tools/$$bin" ]; then \
 			echo "    $$bin"; \
 			sshpass -p $(PLUTO_PASS) scp -O $(PLUTO_SSH_OPTS) \
