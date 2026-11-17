@@ -6,7 +6,13 @@
 //
 // Changes:
 //   1. Disable ADI HDL DMA engines (replaced by styx iq_dma_rx/tx)
-//   2. Reserve 160 MB DDR for IQ DMA buffers (128 MB RX + 32 MB TX)
+//   2. Disable the PL I2C node: styx has no axi_iic core. A probe of the
+//      missing core would hit an unmapped address.
+//   3. Reserve 160 MB DDR for IQ DMA buffers (128 MB RX + 32 MB TX)
+//
+// The Rev.C DTB also has a PL SPI node (spi@7C430000). The other DTBs do
+// not, and an overlay cannot target a node that may be missing. So
+// package.sh disables that node with fdtput instead.
 
 /dts-v1/;
 /plugin/;
@@ -16,6 +22,10 @@
 		status = "disabled";
 	};
 	dma@7c420000 {
+		status = "disabled";
+	};
+	// PL I2C (ADM1177 power monitor) — core removed from the styx BD
+	i2c@41600000 {
 		status = "disabled";
 	};
 };

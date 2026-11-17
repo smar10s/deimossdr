@@ -107,14 +107,9 @@ module system_top (
   wire    [17:0]  gpio_o;
   wire    [17:0]  gpio_t;
 
-  wire            iic_scl;
-  wire            iic_sda;
   wire            phaser_enable;
   wire            pl_burst;
   wire            pl_muxout;
-  wire            pl_spi_clk_o;
-  wire            pl_spi_miso;
-  wire            pl_spi_mosi;
   wire            pl_txdata;
 
   // instantiations
@@ -134,24 +129,23 @@ module system_top (
   assign gpio_i[17] = pl_muxout;
   assign phaser_enable = gpio_o[14];
 
-  assign pl_gpio4 = iic_scl;      //PL_GPIO4
-  assign pl_gpio3 = iic_sda;      //PL_GPIO3
+  // PL expansion header. The ADI design put an AXI SPI and an AXI I2C
+  // here. Styx removed both, so the header only keeps the phaser signals.
+  // The SPI pins idle low and the I2C pins float on their pull-ups.
 
-  //PL_GPIO2
-  ad_iobuf #(
-    .DATA_WIDTH(1)
-  ) i_pl_gpio_iobuf (
-    .dio_t (phaser_enable),
-    .dio_i (pl_spi_clk_o),
-    .dio_o (pl_muxout),
-    .dio_p (pl_gpio2));
+  //PL_GPIO4, PL_GPIO3 (was I2C SCL, SDA)
+  assign pl_gpio4 = 1'bz;
+  assign pl_gpio3 = 1'bz;
 
-  //PL_GPIO1
-  assign pl_spi_miso = pl_gpio1 & ~phaser_enable;
-  assign pl_burst    = pl_gpio1 &  phaser_enable;
+  //PL_GPIO2 (was SPI CLK; MUXOUT input in phaser mode)
+  assign pl_gpio2  = 1'bz;
+  assign pl_muxout = pl_gpio2;
 
-  //PL_GPIO0
-  assign pl_gpio0 = phaser_enable ? pl_txdata : pl_spi_mosi;
+  //PL_GPIO1 (was SPI MISO; BURST input in phaser mode)
+  assign pl_burst = pl_gpio1 & phaser_enable;
+
+  //PL_GPIO0 (was SPI MOSI; TXDATA output in phaser mode)
+  assign pl_gpio0 = phaser_enable ? pl_txdata : 1'b0;
 
   system_wrapper i_system_wrapper (
     .ddr_addr (ddr_addr),
@@ -179,8 +173,6 @@ module system_top (
     .gpio_i (gpio_i),
     .gpio_o (gpio_o),
     .gpio_t (gpio_t),
-    .iic_main_scl_io (iic_scl),
-    .iic_main_sda_io (iic_sda),
     .rx_clk_in (rx_clk_in),
     .rx_data_in (rx_data_in),
     .rx_frame_in (rx_frame_in),
@@ -194,14 +186,6 @@ module system_top (
     .spi0_sdi_i (spi_miso),
     .spi0_sdo_i (1'b0),
     .spi0_sdo_o (spi_mosi),
-
-    .spi_clk_i(1'b0),
-    .spi_clk_o(pl_spi_clk_o),
-    .spi_csn_i(1'b1),
-    .spi_csn_o(),
-    .spi_sdi_i(pl_spi_miso),
-    .spi_sdo_i(1'b0),
-    .spi_sdo_o(pl_spi_mosi),
 
     .tdd_ext_sync(pl_burst),
     .txdata_o(pl_txdata),
