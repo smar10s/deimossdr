@@ -77,17 +77,17 @@ All eight rates decode correctly (HIL digital injection: 100%). Caveats:
 
 Flattened `system_top` after placement (`ExtraPostPlacementOpt` place +
 `ExploreArea` opt, non-incremental), Z-7010, build fingerprint
-`0x647f83bb`:
+`0x77280121`:
 
 | Resource | Used | Available | Utilization |
 |----------|------|-----------|-------------|
-| LUTs     | 15,695 | 17,600 | 89% |
-| FFs      | 15,063 | 35,200 | 43% |
+| LUTs     | 14,749 | 17,600 | 84% |
+| FFs      | 14,021 | 35,200 | 40% |
 | DSP48E1  | 78 | 80 | 98% |
-| BRAM     | 43 | 60 | 72% |
+| BRAM     | 44 | 60 | 73% |
 
-Timing: WNS 0.169 ns, WHS 0.024 ns at 100 MHz. LUT headroom is the binding
-constraint (~1,900 LUTs) — the DSP/BRAM margins are incidental, not targets. At this
+Timing: WNS 0.290 ns, WHS 0.030 ns at 100 MHz. LUT headroom is the binding
+constraint (~2,850 LUTs) — the DSP/BRAM margins are incidental, not targets. At this
 utilization the place directive is netlist-sensitive: see the D21
 amendments before assuming a given strategy still fits.
 
