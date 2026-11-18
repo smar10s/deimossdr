@@ -13,7 +13,7 @@
 # Requires:
 #   - Bitstream at <output_dir>/system_top.bit
 #   - Built plutosdr-fw at platform/styx/extern/plutosdr-fw/
-#   - dtc and fdtoverlay on PATH (or in plutosdr-fw buildroot host tools)
+#   - dtc, fdtoverlay, fdtget, fdtput on PATH (or in buildroot host tools)
 #
 # Produces:
 #   - <output_dir>/pluto.frm
@@ -90,6 +90,15 @@ fi
 FDTOVERLAY_BIN="$FW_DIR/buildroot/output/host/bin/fdtoverlay"
 if [ ! -x "$FDTOVERLAY_BIN" ]; then
     FDTOVERLAY_BIN=$(command -v fdtoverlay) || { echo "ERROR: fdtoverlay not found"; exit 1; }
+fi
+
+FDTGET_BIN="$FW_DIR/buildroot/output/host/bin/fdtget"
+if [ ! -x "$FDTGET_BIN" ]; then
+    FDTGET_BIN=$(command -v fdtget) || { echo "ERROR: fdtget not found"; exit 1; }
+fi
+FDTPUT_BIN="$FW_DIR/buildroot/output/host/bin/fdtput"
+if [ ! -x "$FDTPUT_BIN" ]; then
+    FDTPUT_BIN=$(command -v fdtput) || { echo "ERROR: fdtput not found"; exit 1; }
 fi
 
 export PATH="$FW_DIR/buildroot/output/host/bin:$PATH"
@@ -173,7 +182,14 @@ for dtb_name in zynq-pluto-sdr.dtb zynq-pluto-sdr-revb.dtb zynq-pluto-sdr-revc.d
     fi
 
     "$FDTOVERLAY_BIN" -i "$src" -o "$BUILD_DIR/$dtb_name" "$BUILD_DIR/deimos-pluto.dtbo"
-    echo "  $dtb_name patched"
+
+    # Rev.C only: disable the PL SPI node. Styx has no axi_quad_spi core.
+    if "$FDTGET_BIN" "$BUILD_DIR/$dtb_name" /axi/spi@7C430000 compatible >/dev/null 2>&1; then
+        "$FDTPUT_BIN" -t s "$BUILD_DIR/$dtb_name" /axi/spi@7C430000 status disabled
+        echo "  $dtb_name patched (PL SPI disabled)"
+    else
+        echo "  $dtb_name patched"
+    fi
 done
 
 # ---- Build FIT image using upstream ITS ----
