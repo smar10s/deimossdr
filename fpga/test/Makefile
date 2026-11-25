@@ -157,13 +157,13 @@ test_axi_build_id:
 		COCOTB_TEST_MODULES=test_axi_build_id \
 		$(AXI_BUILD_ID_OVERRIDE)
 
-# Parameter override: DDR_BUF_SAMPLES=64 for wrap-boundary test.
+# Parameter override for the wrap-boundary test: one full ring plus wrap.
 # Verilator uses -G (top-level param) via EXTRA_ARGS (to not clobber cocotb's COMPILE_ARGS).
 # Icarus uses -P (hierarchical) via COMPILE_ARGS (iverilog-only; EXTRA_ARGS goes to vvp too).
 ifeq ($(SIM),verilator)
-IQ_DMA_RX_WRAP_OVERRIDE := EXTRA_ARGS="$(EXTRA_ARGS) -GDDR_BUF_SAMPLES=64"
+IQ_DMA_RX_WRAP_OVERRIDE := EXTRA_ARGS="$(EXTRA_ARGS) -GDDR_BUF_SAMPLES=512 -GRING_BURSTS=16"
 else
-IQ_DMA_RX_WRAP_OVERRIDE := COMPILE_ARGS="-Piq_dma_rx.DDR_BUF_SAMPLES=64"
+IQ_DMA_RX_WRAP_OVERRIDE := COMPILE_ARGS="-Piq_dma_rx.DDR_BUF_SAMPLES=512 -Piq_dma_rx.RING_BURSTS=16"
 endif
 
 .PHONY: test_iq_dma_rx_wrap
