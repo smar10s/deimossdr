@@ -3,6 +3,7 @@ import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, ClockCycles, Timer
 from axi_lite_driver import AxiLiteMaster
+from axi3_mocks import Axi3WriteSlave
 
 # Register offsets
 REG_CONTROL      = 0x00
@@ -13,118 +14,6 @@ REG_SAMPLE_COUNT = 0x10
 REG_WRAP_COUNT   = 0x14
 
 DDR_BASE_ADDR = 0x2000_0000
-
-
-# =========================================================
-# AXI3 Write Slave Mock
-# =========================================================
-class Axi3WriteSlave:
-    """Mock AXI3 write slave that captures burst writes into a dict."""
-
-    def __init__(self, dut, prefix="m_axi_", clk=None, wready_delay=0):
-        self.dut = dut
-        self.clk = clk if clk is not None else dut.clk
-        self._p = prefix
-        self.mem = {}  # byte_addr -> byte value
-        self.bursts = []  # list of (base_addr, [beat_data, ...])
-        self.wready_delay = wready_delay  # cycles to stall WREADY
-        self.stall_wready = False  # if True, never assert WREADY
-
-    def _sig(self, name):
-        return getattr(self.dut, self._p + name)
-
-    def read_word(self, byte_addr):
-        """Read a 32-bit word from the memory model (little-endian)."""
-        val = 0
-        for i in range(4):
-            val |= self.mem.get(byte_addr + i, 0) << (8 * i)
-        return val
-
-    def read_dword(self, byte_addr):
-        """Read a 64-bit doubleword from the memory model (little-endian)."""
-        val = 0
-        for i in range(8):
-            val |= self.mem.get(byte_addr + i, 0) << (8 * i)
-        return val
-
-    async def run(self):
-        """Main loop — run as cocotb.start_soon(slave.run())."""
-        # Initialize slave-driven signals
-        self._sig("awready").value = 0
-        self._sig("wready").value = 0
-        self._sig("bresp").value = 0
-        self._sig("bvalid").value = 0
-
-        while True:
-            # Wait for AWVALID (handle X during reset)
-            while True:
-                await RisingEdge(self.clk)
-                try:
-                    if int(self._sig("awvalid").value) == 1:
-                        break
-                except ValueError:
-                    pass  # Signal is X/Z during reset
-
-            # Capture address
-            base_addr = int(self._sig("awaddr").value)
-            awlen = int(self._sig("awlen").value)  # number of beats - 1
-            burst_len = awlen + 1
-
-            # Accept AW
-            self._sig("awready").value = 1
-            await RisingEdge(self.clk)
-            self._sig("awready").value = 0
-
-            # Receive W beats
-            beat_data = []
-            for beat_idx in range(burst_len):
-                # Apply WREADY delay / stall
-                if self.stall_wready:
-                    # Never assert WREADY — infinite stall
-                    while True:
-                        await RisingEdge(self.clk)
-                        if not self.stall_wready:
-                            break
-                elif self.wready_delay > 0:
-                    for _ in range(self.wready_delay):
-                        await RisingEdge(self.clk)
-
-                self._sig("wready").value = 1
-
-                # Wait for WVALID
-                while True:
-                    await RisingEdge(self.clk)
-                    if int(self._sig("wvalid").value) == 1:
-                        break
-
-                data = int(self._sig("wdata").value)
-                wlast = int(self._sig("wlast").value)
-                beat_data.append(data)
-
-                # Store in memory (little-endian, 8 bytes per beat)
-                byte_addr = base_addr + beat_idx * 8
-                for i in range(8):
-                    self.mem[byte_addr + i] = (data >> (8 * i)) & 0xFF
-
-                self._sig("wready").value = 0
-
-                # Check WLAST on final beat
-                if beat_idx == burst_len - 1:
-                    assert wlast == 1, f"Expected WLAST on beat {beat_idx}"
-
-            self.bursts.append((base_addr, beat_data))
-
-            # Send B response
-            self._sig("bresp").value = 0  # OKAY
-            self._sig("bvalid").value = 1
-
-            # Wait for BREADY
-            while True:
-                await RisingEdge(self.clk)
-                if int(self._sig("bready").value) == 1:
-                    break
-
-            self._sig("bvalid").value = 0
 
 
 # =========================================================
@@ -326,31 +215,29 @@ async def test_enable_disable(dut):
 
 @cocotb.test()
 async def test_overflow_count(dut):
-    """Stall AXI WREADY, feed samples until overflow_count increments."""
+    """Stall AXI WREADY, verify the exact drop count when the ring fills."""
     axi, slave = await setup(dut)
 
-    # Configure and enable with stalled WREADY
+    ring = int(dut.RING_BURSTS.value)
+    total = (ring + 2) * 32
+    samples = [(i & 0x7FF, (i * 5) & 0x7FF) for i in range(total)]
+
+    # Configure and enable with stalled WREADY.
     slave.stall_wready = True
     await axi.write(REG_DDR_BASE, DDR_BASE_ADDR)
     await axi.write(REG_CONTROL, 1)
 
-    # Feed 32 samples to fill first buffer half (triggers burst attempt)
-    samples = [(i, i) for i in range(32)]
     await feed_iq(dut, samples)
+    await ClockCycles(dut.clk, 200)
 
-    # Feed 32 more samples to fill second buffer half
-    # Now both halves are occupied and burst is stalled
-    await feed_iq(dut, samples)
-
-    # Feed more samples — these should overflow
-    overflow_samples = [(i, i) for i in range(64)]
-    await feed_iq(dut, overflow_samples)
-
-    # Check STATUS for overflow_count > 0
+    # A slot is reserved before a burst's first sample, so the fill stage
+    # holds no partial burst when the ring fills: exactly ring*32 samples
+    # are accepted and the last two bursts are dropped.
     status, _ = await axi.read(REG_STATUS)
     overflow_count = (status >> 16) & 0xFFFF
-    assert overflow_count > 0, \
-        f"Expected overflow_count > 0, got {overflow_count} (STATUS=0x{status:08x})"
+    assert overflow_count == 2 * 32, \
+        f"Expected {2 * 32} drops (ring={ring}), got {overflow_count} " \
+        f"(STATUS=0x{status:08x})"
 
 
 @cocotb.test()
@@ -413,16 +300,20 @@ async def test_no_burst_without_ddr_base(dut):
 
 @cocotb.test()
 async def test_ddr_wrap_boundary(dut):
-    """With DDR_BUF_SAMPLES=64, verify write pointer wraps after 2 bursts.
+    """With a small DDR buffer, verify the write pointer wraps correctly.
 
-    Requires parameter override: -Piq_dma_rx.DDR_BUF_SAMPLES=64
     Run via: make test_iq_dma_rx_wrap
+    The target sets DDR_BUF_SAMPLES=512 and RING_BURSTS=16.
     """
-    # Skip if DDR_BUF_SAMPLES is the default large value (not overridden)
+    # Skip on the default large-buffer target; the wrap target is small.
     buf_samples = int(dut.DDR_BUF_SAMPLES.value)
-    if buf_samples > 128:
-        cocotb.log.info(f"Skipping: DDR_BUF_SAMPLES={buf_samples} (need <=128 for wrap test)")
+    if buf_samples > 4096:
+        cocotb.log.info(f"Skipping: DDR_BUF_SAMPLES={buf_samples} (wrap target is small)")
         return
+
+    ring = int(dut.RING_BURSTS.value)
+    bursts_before_wrap = buf_samples // 32
+    n_bursts = bursts_before_wrap + 1
 
     axi, slave = await setup(dut)
 
@@ -430,31 +321,29 @@ async def test_ddr_wrap_boundary(dut):
     await axi.write(REG_DDR_BASE, DDR_BASE_ADDR)
     await axi.write(REG_CONTROL, 1)
 
-    # Feed 96 samples (3 bursts worth: 32 samples per burst)
-    samples = [(i, i + 50) for i in range(96)]
+    # One full buffer plus one burst, so the last burst wraps to the base.
+    samples = [(i & 0x7FF, (i + 50) & 0x7FF) for i in range(n_bursts * 32)]
     await feed_iq(dut, samples)
 
-    # Wait for all bursts to complete
-    await ClockCycles(dut.clk, 600)
+    for _ in range(40000):
+        await RisingEdge(dut.clk)
+        if len(slave.bursts) >= n_bursts:
+            break
 
-    # Expect 3 bursts total
-    assert len(slave.bursts) == 3, \
-        f"Expected 3 bursts, got {len(slave.bursts)}"
+    assert len(slave.bursts) == n_bursts, \
+        f"Expected {n_bursts} bursts, got {len(slave.bursts)} (ring={ring})"
 
-    # First burst at DDR_BASE + 0
-    assert slave.bursts[0][0] == DDR_BASE_ADDR, \
-        f"Burst 0 addr: expected 0x{DDR_BASE_ADDR:08x}, got 0x{slave.bursts[0][0]:08x}"
+    for b in range(bursts_before_wrap):
+        expected_addr = DDR_BASE_ADDR + b * 128
+        assert slave.bursts[b][0] == expected_addr, \
+            f"Burst {b} addr: expected 0x{expected_addr:08x}, " \
+            f"got 0x{slave.bursts[b][0]:08x}"
 
-    # Second burst at DDR_BASE + 128 (32 samples * 4 bytes each)
-    expected_addr1 = DDR_BASE_ADDR + 128
-    assert slave.bursts[1][0] == expected_addr1, \
-        f"Burst 1 addr: expected 0x{expected_addr1:08x}, got 0x{slave.bursts[1][0]:08x}"
+    assert slave.bursts[-1][0] == DDR_BASE_ADDR, \
+        f"Last burst addr: expected 0x{DDR_BASE_ADDR:08x} (wrap), " \
+        f"got 0x{slave.bursts[-1][0]:08x}"
 
-    # Third burst wraps back to DDR_BASE + 0
-    assert slave.bursts[2][0] == DDR_BASE_ADDR, \
-        f"Burst 2 addr: expected 0x{DDR_BASE_ADDR:08x} (wrap), got 0x{slave.bursts[2][0]:08x}"
-
-    # Verify wr_ptr = 32 (one burst past wrap)
+    # One burst past the wrap.
     wr_ptr, _ = await axi.read(REG_WR_PTR)
     assert wr_ptr == 32, f"Expected wr_ptr=32 after wrap, got {wr_ptr}"
 
